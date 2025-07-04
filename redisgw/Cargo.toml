@@ -1,0 +1,24 @@
+[package]
+name = "redisgw"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+foundationdb = { version = "=0.9.2", features = [
+    "embedded-fdb-include",
+    "tenant-experimental",
+    "fdb-7_3",
+] }
+futures = "=0.3.31"
+tokio = { version = "=1.44.1", features = ["full"] }
+log = "=0.4.27"
+env_logger = "=0.11"
+futures-util = "=0.3.31"
+async-stream = "=0.3.6"
+bincode = { version = "2.0.1", features = ["serde"]}
+redis-protocol = { version = "6.0.0", features = ["convert"] }
+
+fdb = { path = "../foundationdb" }
+
+[dev-dependencies]
+fdb-testcontainer = { git = "https://gitlab.com/Akanoa/fdb-testcontainer.git" }
