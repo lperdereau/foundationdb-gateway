@@ -14,7 +14,10 @@ impl RedisGateway {
 
 impl RedisGateway {
     pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        self.fdb.set(key, value).await
+        self.fdb
+            .set(key, value)
+            .await
+            .map_err(|e| format!("{:?}", e))
     }
 }
 

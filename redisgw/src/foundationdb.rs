@@ -34,8 +34,18 @@ impl FoundationDB {
         }
     }
 
-    pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        self.set_opt(key, value, None, None, None).await.map(|_| ())
+    pub async fn set(
+        &self,
+        key: &[u8],
+        value: &[u8],
+    ) -> std::result::Result<(), foundationdb::FdbBindingError> {
+        self.database
+            .run(|trx, _| async move {
+                trx.set(key, value);
+                Ok(())
+            })
+            .await?;
+        Ok(())
     }
 
     pub async fn set_opt(
@@ -46,12 +56,21 @@ impl FoundationDB {
         get: Option<bool>,
         ttl: Option<SetTTL>,
     ) -> Result<Option<Vec<u8>>, String> {
-        let data_subspace = self.root_subspace.subspace(&DataPrefix::Table);
-        let ttl_subspace = self.root_subspace.subspace(&DataPrefix::ExpiryTable);
+        let data_key = self.root_subspace.subspace(&DataPrefix::Table).pack(&key);
+        let ttl_key = self
+            .root_subspace
+            .subspace(&DataPrefix::ExpiryTable)
+            .pack(&key);
+
         let get = get.unwrap_or(false);
-        let ts = match ttl {
-            Some(val) => val.unix_epoch_in_ms()?,
-            None => 0,
+        let ts_vec;
+        let ts: &[u8] = match ttl {
+            Some(val) => {
+                let ts_string = val.unix_epoch_in_ms()?.to_string();
+                ts_vec = ts_string.as_bytes().to_vec();
+                &ts_vec
+            }
+            None => &[],
         };
 
         let old_val = if get {
@@ -69,29 +88,20 @@ impl FoundationDB {
             None => true,
         };
 
-        let data_key = data_subspace.pack(&key);
-        let data_key_slice: &[u8] = &data_key;
-        let ttl_key = ttl_subspace.pack(&key);
-        let ttl_key_slice: &[u8] = &ttl_key;
+        if should_set {
+            let res = self.set(&data_key, value).await;
+            if let Err(e) = res {
+                return Err(format!("FoundationDB set_opt error (value): {:?}", e));
+            }
 
-        let res = self
-            .database
-            .run(|trx, _| async move {
-                if should_set {
-                    trx.set(&data_key_slice, value);
+            if ts.len() > 0 {
+                let res_ttl = self.set(&ttl_key, ts).await;
+                if let Err(e) = res_ttl {
+                    return Err(format!("FoundationDB set_opt error (ttl): {:?}", e));
                 }
-                if ts > 0 {
-                    let ts_bytes = ts.to_be_bytes();
-                    trx.set(&ttl_key_slice, &ts_bytes);
-                }
-                Ok(())
-            })
-            .await;
-        if res.is_err() {
-            Err(format!("FoundationDB set_opt error: {:?}", res))
-        } else {
-            Ok(old_val)
+            }
         }
+        Ok(old_val)
     }
 
     pub async fn get(
@@ -99,7 +109,7 @@ impl FoundationDB {
         key: &[u8],
     ) -> std::result::Result<Option<Vec<u8>>, foundationdb::FdbBindingError> {
         let data_subspace = self.root_subspace.subspace(&DataPrefix::Table);
-        let data_key = data_subspace.pack(&key.to_vec());
+        let data_key = data_subspace.pack(&key);
         let value = self
             .database
             .run(|trx, _| {
