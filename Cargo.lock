@@ -1488,9 +1488,11 @@ dependencies = [
  "fdb",
  "fdb-testcontainer",
  "foundationdb",
+ "foundationdb-tuple",
  "futures",
  "futures-util",
  "log",
+ "rand 0.8.5",
  "redis-protocol",
  "tokio",
 ]

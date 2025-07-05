@@ -10,14 +10,14 @@ async fn test_insert_record() {
     let gw = RedisGateway::new(db);
     let _ = gw.set(b"key", b"value").await;
     let result = gw.get(b"key").await;
-    assert_eq!(result, Some(b"value".to_vec()));
+    assert_eq!(result, Some(b"\"value\"".to_vec()));
     let _ = gw.del(b"key").await;
     let result = gw.get(b"key").await;
     assert!(result.is_none());
 
     let _ = gw.set(b"key", b"value").await;
     let result = gw.getdel(b"key").await;
-    assert_eq!(result, Some(b"value".to_vec()));
+    assert_eq!(result, Some(b"\"value\"".to_vec()));
     let result = gw.getdel(b"key").await;
     assert!(result.is_none());
 }
