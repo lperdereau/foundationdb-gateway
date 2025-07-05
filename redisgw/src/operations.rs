@@ -1,10 +1,65 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Copy)]
+pub enum SetTTL {
+    /// Set expiry in seconds.
+    EX(u64),
+    /// Set expiry in milliseconds.
+    PX(u64),
+    /// Set expiry at a specific unix time in seconds.
+    EXAT(u64),
+    /// Set expiry at a specific unix time in milliseconds.
+    PXAT(u64),
+    /// Keep the existing TTL.
+    KEPPTTL,
+}
+
+impl SetTTL {
+    pub fn unix_epoch_in_ms(self) -> Result<u128, String> {
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(val) => val,
+            Err(e) => return Err(format!("SystemTime error: {:?}", e)),
+        };
+
+        match self {
+            SetTTL::EX(secs) => Ok((now + Duration::from_secs(secs)).as_millis()),
+            SetTTL::PX(ms) => Ok((now + Duration::from_millis(ms)).as_millis()),
+            SetTTL::EXAT(timestamp) => Ok(Duration::from_secs(timestamp).as_millis()),
+            SetTTL::PXAT(timestamp) => Ok(Duration::from_millis(timestamp).as_millis()),
+            SetTTL::KEPPTTL => Ok(0),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum SetMethod {
+    /// Only set the key if it does not already exist.
+    NX,
+    /// Only set the key if it already exists.
+    XX,
+}
+
 #[allow(dead_code)]
 pub trait RedisOperations {
     /// Responds to a PING command with an optional message.
     async fn ping(&self, message: Vec<&[u8]>) -> Vec<u8>;
 
-    /// Sets the value of a key.
-    async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), String>;
+    /// Sets the value of a key with optional parameters.
+    ///
+    /// SET key value [NX | XX] [GET] [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL]
+    ///
+    /// # Parameters
+    /// - `key`: The key to set.
+    /// - `value`: The value to set.
+    /// - `method`: Optional. Set method, e.g., NX or XX.
+    /// - `get`: Optional. If true, return the old value.
+    /// - `ttl`: Optional. Time-to-live option.
+    async fn set_opt(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        extra_args: Vec<&[u8]>,
+    ) -> Result<Option<Vec<u8>>, String>;
 
     /// Gets the value of a key.
     async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;

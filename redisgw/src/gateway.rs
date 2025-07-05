@@ -1,5 +1,5 @@
-use crate::operations::RedisOperations;
-use fdb::FoundationDB;
+use crate::foundationdb::FoundationDB;
+use crate::operations::{RedisOperations, SetMethod, SetTTL};
 
 #[derive(Clone)]
 pub struct RedisGateway {
@@ -9,6 +9,12 @@ pub struct RedisGateway {
 impl RedisGateway {
     pub fn new(fdb: FoundationDB) -> Self {
         Self { fdb: fdb }
+    }
+}
+
+impl RedisGateway {
+    pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
+        self.fdb.set(key, value).await
     }
 }
 
@@ -26,11 +32,47 @@ impl RedisOperations for RedisGateway {
         }
     }
 
-    async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        self.fdb
-            .set(key, value)
-            .await
-            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+    async fn set_opt(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        extra_args: Vec<&[u8]>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use crate::operations::{SetMethod, SetTTL};
+
+        let mut method = None;
+        let mut get = None;
+        let mut ttl = None;
+
+        let mut args = extra_args.iter().peekable();
+        while let Some(arg) = args.next() {
+            let s = std::str::from_utf8(arg)
+                .map_err(|_| "Invalid UTF-8 in argument")?
+                .to_ascii_uppercase();
+            match s.as_str() {
+                "NX" => method = Some(SetMethod::NX),
+                "XX" => method = Some(SetMethod::XX),
+                "GET" => get = Some(true),
+                "EX" | "PX" | "EXAT" | "PXAT" => {
+                    let next = args.next().ok_or(format!("{s} requires an argument"))?;
+                    let n = std::str::from_utf8(next)
+                        .ok()
+                        .and_then(|x| x.parse::<u64>().ok())
+                        .ok_or(format!("Invalid value for {s}"))?;
+                    ttl = Some(match s.as_str() {
+                        "EX" => SetTTL::EX(n),
+                        "PX" => SetTTL::PX(n),
+                        "EXAT" => SetTTL::EXAT(n),
+                        "PXAT" => SetTTL::PXAT(n),
+                        _ => unreachable!(),
+                    });
+                }
+                "KEEPTTL" => ttl = Some(SetTTL::KEPPTTL),
+                _ => return Err(format!("Unknown SET option: {s}")),
+            }
+        }
+
+        self.fdb.set_opt(key, value, method, get, ttl).await
     }
 
     async fn get(&self, key: &[u8]) -> Option<Vec<u8>> {

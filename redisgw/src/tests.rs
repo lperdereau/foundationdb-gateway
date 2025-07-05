@@ -1,31 +1,32 @@
+use crate::foundationdb::FoundationDB;
 use crate::gateway::RedisGateway;
 use crate::operations::RedisOperations;
-use fdb::FoundationDB;
 use fdb_testcontainer::get_db_once;
+use foundationdb_tuple::Subspace;
 
 #[tokio::test]
-async fn test_insert_record() {
+async fn test_gw_insert_record() {
     let _guard = get_db_once().await;
-    let db = FoundationDB::new(_guard.clone());
+    let db = FoundationDB::new(Subspace::all(), _guard.clone());
     let gw = RedisGateway::new(db);
     let _ = gw.set(b"key", b"value").await;
     let result = gw.get(b"key").await;
-    assert_eq!(result, Some(b"value".to_vec()));
+    assert_eq!(result, Some(b"\"value\"".to_vec()));
     let _ = gw.del(b"key").await;
     let result = gw.get(b"key").await;
     assert!(result.is_none());
 
     let _ = gw.set(b"key", b"value").await;
     let result = gw.getdel(b"key").await;
-    assert_eq!(result, Some(b"value".to_vec()));
+    assert_eq!(result, Some(b"\"value\"".to_vec()));
     let result = gw.getdel(b"key").await;
     assert!(result.is_none());
 }
 
 #[tokio::test]
-async fn test_increment_decrement_record() {
+async fn test_gw_increment_decrement_record() {
     let _guard = get_db_once().await;
-    let db = FoundationDB::new(_guard.clone());
+    let db = FoundationDB::new(Subspace::all(), _guard.clone());
     let gateway = RedisGateway::new(db);
     let key = b"counter";
     gateway.set(key, b"0").await.unwrap();
@@ -55,9 +56,9 @@ async fn test_increment_decrement_record() {
 }
 
 #[tokio::test]
-async fn test_increment_decrement_by_record() {
+async fn test_gw_increment_decrement_by_record() {
     let _guard = get_db_once().await;
-    let db = FoundationDB::new(_guard.clone());
+    let db = FoundationDB::new(Subspace::all(), _guard.clone());
     let gateway = RedisGateway::new(db);
     let key = b"counter";
     gateway.set(key, b"0").await.unwrap();

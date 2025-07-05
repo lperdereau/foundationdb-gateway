@@ -17,8 +17,7 @@ futures-util = "=0.3.31"
 async-stream = "=0.3.6"
 bincode = { version = "2.0.1", features = ["serde"]}
 redis-protocol = { version = "6.0.0", features = ["convert"] }
-
-fdb = { path = "../foundationdb" }
+foundationdb-tuple = "0.9.1"
 
 [dev-dependencies]
 fdb-testcontainer = { git = "https://gitlab.com/Akanoa/fdb-testcontainer.git" }

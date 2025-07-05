@@ -44,9 +44,22 @@ impl CommandHandler {
     }
 
     pub async fn handle(&self, cmd_str: &str, args: Vec<&[u8]>) -> Frame {
+        println!("Command: {}", cmd_str);
+        for (i, arg) in args.iter().enumerate() {
+            if let Ok(arg_str) = std::str::from_utf8(arg) {
+                println!("arg[{}]: {}", i, arg_str);
+            } else {
+                println!("arg[{}]: <non-utf8>", i);
+            }
+        }
+
         match Command::from_str(cmd_str) {
             Some(Command::Ping) => Frame::SimpleString(self.gateway.ping(args).await.into()),
-            Some(Command::Set) => match self.gateway.set(args[0], args[1]).await {
+            Some(Command::Set) => match self
+                .gateway
+                .set_opt(args[0], args[1], args[2..].to_vec())
+                .await
+            {
                 Ok(_) => Frame::SimpleString("OK".into()),
                 Err(err) => Frame::SimpleString(err.into()),
             },
