@@ -32,10 +32,24 @@ impl Server {
     }
 
     async fn handle_connection(mut socket: TcpStream, handler: CommandHandler) {
-        let mut buf = vec![0u8; 4096];
+        const INITIAL_BUF_SIZE: usize = 8 * 1024; // 8KB
+        const MAX_BUF_SIZE: usize = 512 * 1024 * 1024; // 512MB
+
+        let mut buf = vec![0u8; INITIAL_BUF_SIZE];
         let mut offset = 0;
 
         loop {
+            // If buffer is full, grow it (up to MAX_BUF_SIZE)
+            if offset == buf.len() {
+                if buf.len() == MAX_BUF_SIZE {
+                    // Buffer is at max size, cannot grow further
+                    let _ = socket.write_all(b"-ERR command too large\r\n").await;
+                    return;
+                }
+                let new_size = std::cmp::min(buf.len() * 2, MAX_BUF_SIZE);
+                buf.resize(new_size, 0);
+            }
+
             let n = match socket.read(&mut buf[offset..]).await {
                 Ok(0) => return, // connection closed
                 Ok(n) => n,
@@ -53,8 +67,14 @@ impl Server {
 
             // Move any leftover bytes to the front of the buffer
             if consumed < offset + n {
+                let leftover = offset + n - consumed;
+                // If leftover is too large, grow buffer
+                if leftover > buf.len() / 2 && buf.len() < MAX_BUF_SIZE {
+                    let new_size = std::cmp::min(buf.len() * 2, MAX_BUF_SIZE);
+                    buf.resize(new_size, 0);
+                }
                 buf.copy_within(consumed..offset + n, 0);
-                offset = offset + n - consumed;
+                offset = leftover;
             } else {
                 offset = 0;
             }
