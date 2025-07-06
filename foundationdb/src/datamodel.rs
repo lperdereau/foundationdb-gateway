@@ -7,7 +7,7 @@ pub const MAX_VALUE_SIZE: usize = 100 * 1000; // 100KB
 pub const MAX_TRANSACTION_SIZE: usize = 9 * 1000 * 1000; // 9MB
 pub const MAX_RETRIES: usize = 3; // Maximum number of retries for a transaction
 
-struct DataModel {}
+pub struct DataModel {}
 
 impl DataModel {
     // Function to split data into chunks
@@ -19,18 +19,17 @@ impl DataModel {
     // Function to store chunks in FoundationDB using subspace and packing
     pub async fn store_chunks_in_fdb(
         fdb: &FoundationDB,
-        key: &Vec<u8>,
+        key: &[u8],
         chunks: Vec<Vec<u8>>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let mut current_batch_size = 0;
         let mut batch = Vec::new();
-        let mut successfully_stored = HashSet::new();
 
         for (i, chunk) in chunks.into_iter().enumerate() {
             let chunk_size = chunk.len();
             if current_batch_size + chunk_size > MAX_TRANSACTION_SIZE {
                 // Process the current batch
-                Self::store_batch_with_retry(fdb, key, &batch, &mut successfully_stored).await?;
+                Self::store_batch_with_retry(fdb, key, &batch).await?;
                 batch.clear();
                 current_batch_size = 0;
             }
@@ -40,7 +39,7 @@ impl DataModel {
 
         // Process any remaining chunks in the batch
         if !batch.is_empty() {
-            Self::store_batch_with_retry(fdb, key, &batch, &mut successfully_stored).await?;
+            Self::store_batch_with_retry(fdb, key, &batch).await?;
         }
 
         Ok(())
@@ -49,25 +48,20 @@ impl DataModel {
     // Helper function to store a batch of chunks with retry logic
     async fn store_batch_with_retry(
         fdb: &FoundationDB,
-        key: &Vec<u8>,
+        key: &[u8],
         batch: &[(usize, Vec<u8>)],
-        successfully_stored: &mut HashSet<usize>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let mut retries = 0;
         while retries < MAX_RETRIES {
             match Self::store_batch_in_fdb(fdb, key, batch).await {
                 Ok(_) => {
-                    // Mark chunks as successfully stored
-                    for &(i, _) in batch {
-                        successfully_stored.insert(i);
-                    }
                     return Ok(());
                 }
                 Err(e) => {
                     retries += 1;
                     if retries == MAX_RETRIES {
                         // If all retries fail, clean up any successfully stored chunks
-                        Self::cleanup_failed_chunks(fdb, key, successfully_stored).await?;
+                        Self::clean_chunks(fdb, key).await?;
                         return Err(e);
                     }
                 }
@@ -79,7 +73,7 @@ impl DataModel {
     // Function to store a batch of chunks
     async fn store_batch_in_fdb(
         fdb: &FoundationDB,
-        key: &Vec<u8>,
+        key: &[u8],
         batch: &[(usize, Vec<u8>)],
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key.clone());
@@ -99,20 +93,26 @@ impl DataModel {
     }
 
     // Function to clean up failed chunks
-    async fn cleanup_failed_chunks(
+    pub async fn clean_chunks(
         fdb: &FoundationDB,
-        key: &Vec<u8>,
-        successfully_stored: &HashSet<usize>,
+        key: &[u8],
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
-        let subspace = Subspace::from_bytes(key.clone());
+        let mut end = key.to_vec();
+        end.push(0xFF);
+
+        let kvs = fdb.full_scan(key, &end).await.collect::<Vec<_>>().await;
+        let mut keys_to_clear = Vec::new();
+        for res in kvs {
+            let (k, _) = res?;
+            keys_to_clear.push(k);
+        }
+
         fdb.database
             .run(move |trx, _| {
-                let successfully_stored = successfully_stored.clone();
-                let subspace = subspace.clone();
+                let keys_to_clear = keys_to_clear.clone();
                 async move {
-                    for i in successfully_stored {
-                        let chunk_key = subspace.pack(&(i));
-                        trx.clear(&chunk_key);
+                    for k in keys_to_clear {
+                        trx.clear(&k);
                     }
                     Ok(())
                 }
@@ -123,7 +123,7 @@ impl DataModel {
     // Function to retrieve and combine chunks from FoundationDB
     pub async fn retrieve_chunks_from_fdb(
         fdb: &FoundationDB,
-        key: &Vec<u8>,
+        key: &[u8],
         num_chunks: usize,
     ) -> std::result::Result<Vec<u8>, foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key.clone());

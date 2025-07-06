@@ -6,7 +6,8 @@ use futures_util::stream::StreamExt;
 use std::result::Result;
 use std::sync::Arc;
 
-pub mod datamodel;
+pub(crate) mod datamodel;
+use datamodel::DataModel;
 
 const MAX_SCAN_SIZE: usize = 20;
 
@@ -21,31 +22,25 @@ impl FoundationDB {
     }
 
     pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), FdbBindingError> {
-        self.database
-            .run(|trx, _| async move {
-                trx.set(key, value);
-                Ok(())
-            })
-            .await?;
+        let chunks = DataModel::split_into_chunks(&value, None);
+        if let Some(_) = self.get(key).await? {
+            self.delete(key).await?;
+        }
+        DataModel::store_chunks_in_fdb(&self, key, chunks).await?;
         Ok(())
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, FdbBindingError> {
-        let value = self
-            .database
-            .run(|trx, _| async move { Ok(trx.get(key, true).await?) })
-            .await?;
-        let value = value.map(|v| v.to_vec());
-        Ok(value)
+        let result = DataModel::reconstruct_bloc(self, key).await?;
+        if result.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(result))
+        }
     }
 
     pub async fn delete(&self, key: &[u8]) -> Result<i64, FdbBindingError> {
-        self.database
-            .run(|trx, _| async move {
-                trx.clear(key);
-                Ok(1i64)
-            })
-            .await?;
+        DataModel::clean_chunks(self, key).await?;
         Ok(1)
     }
 

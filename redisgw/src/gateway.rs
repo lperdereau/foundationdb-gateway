@@ -49,184 +49,112 @@ impl RedisOperations for RedisGateway {
 
     async fn del(&self, key: &[u8]) -> Result<i64, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let key = key.to_vec();
-                async move {
-                    let val = trx.get(&key, true).await?;
-                    if val.is_some() {
-                        trx.clear(&key);
-                        Ok(1i64)
-                    } else {
-                        Ok(0i64)
-                    }
-                }
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB del error: {:?}", e))
+        let val = db.get(key).await.map_err(|e| e.to_string())?;
+        if val.is_none() {
+            return Ok(0i64);
+        }
+        db.delete(key).await.map_err(|e| e.to_string())
     }
 
     async fn getdel(&self, key: &[u8]) -> Option<Vec<u8>> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let key = key.to_vec();
-                async move {
-                    let val = trx.get(&key, true).await?;
-                    if val.is_some() {
-                        trx.clear(&key);
-                    }
-                    // Convert Option<FdbSlice> to Option<Vec<u8>>
-                    Ok(val.map(|v| v.to_vec()))
-                }
-            })
-            .await;
-        match res {
-            Ok(Some(val)) => match std::str::from_utf8(&val) {
+        let val = match db.get(key).await {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+        if db.delete(key).await.is_err() {
+            return None;
+        }
+        match val {
+            Some(val) => match std::str::from_utf8(&val) {
                 Ok(s) => Some(format!("\"{}\"", s).into_bytes()),
                 Err(_) => Some(val),
             },
-            Ok(None) => None,
-            Err(_) => None,
+            None => None,
         }
     }
 
     async fn incr(&self, key: &[u8]) -> Result<i64, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(|trx, _| async move {
-                let val = trx.get(key, true).await?;
-                let mut n = 0i64;
-                if let Some(bytes) = val {
-                    let s = std::str::from_utf8(&bytes).map_err(|_| {
-                        foundationdb::FdbBindingError::CustomError(
-                            "Value is not valid UTF-8".into(),
-                        )
-                    })?;
-                    n = s.parse::<i64>().map_err(|_| {
-                        foundationdb::FdbBindingError::CustomError(
-                            "Value is not a valid integer".into(),
-                        )
-                    })?;
-                }
-                n += 1;
-                trx.set(key, n.to_string().as_bytes());
-                Ok(n)
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB incr error: {:?}", e))
+        let val = db.get(key).await.map_err(|e| e.to_string())?;
+        let mut n = 0i64;
+        if let Some(bytes) = val {
+            let s =
+                std::str::from_utf8(&bytes).map_err(|_| "Value is not valid UTF-8".to_string())?;
+            n = s
+                .parse::<i64>()
+                .map_err(|_| "Value is not a valid integer".to_string())?;
+        }
+        n += 1;
+        db.set(key, n.to_string().as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     async fn decr(&self, key: &[u8]) -> Result<i64, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(|trx, _| async move {
-                let val = trx.get(key, true).await?;
-                let mut n = 0i64;
-                if let Some(bytes) = val {
-                    let s = std::str::from_utf8(&bytes).map_err(|_| {
-                        foundationdb::FdbBindingError::CustomError(
-                            "Value is not valid UTF-8".into(),
-                        )
-                    })?;
-                    n = s.parse::<i64>().map_err(|_| {
-                        foundationdb::FdbBindingError::CustomError(
-                            "Value is not a valid integer".into(),
-                        )
-                    })?;
-                }
-                n -= 1;
-                trx.set(key, n.to_string().as_bytes());
-                Ok(n)
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB decr error: {:?}", e))
+        let val = db.get(key).await.map_err(|e| e.to_string())?;
+        let mut n = 0i64;
+        if let Some(bytes) = val {
+            let s =
+                std::str::from_utf8(&bytes).map_err(|_| "Value is not valid UTF-8".to_string())?;
+            n = s
+                .parse::<i64>()
+                .map_err(|_| "Value is not a valid integer".to_string())?;
+        }
+        n -= 1;
+        db.set(key, n.to_string().as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     async fn incr_by(&self, key: &[u8], increment: i64) -> Result<i64, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let key = key.to_vec();
-                async move {
-                    let val = trx.get(&key, true).await?;
-                    let mut n = 0i64;
-                    if let Some(bytes) = val {
-                        let s = std::str::from_utf8(&bytes).map_err(|_| {
-                            foundationdb::FdbBindingError::CustomError(
-                                "Value is not valid UTF-8".into(),
-                            )
-                        })?;
-                        n = s.parse::<i64>().map_err(|_| {
-                            foundationdb::FdbBindingError::CustomError(
-                                "Value is not a valid integer".into(),
-                            )
-                        })?;
-                    }
-                    n += increment;
-                    trx.set(&key, n.to_string().as_bytes());
-                    Ok(n)
-                }
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB incr_by error: {:?}", e))
+        let val = db.get(key).await.map_err(|e| e.to_string())?;
+        let mut n = 0i64;
+        if let Some(bytes) = val {
+            let s =
+                std::str::from_utf8(&bytes).map_err(|_| "Value is not valid UTF-8".to_string())?;
+            n = s
+                .parse::<i64>()
+                .map_err(|_| "Value is not a valid integer".to_string())?;
+        }
+        n += increment;
+        db.set(key, n.to_string().as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     async fn decr_by(&self, key: &[u8], decrement: i64) -> Result<i64, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let key = key.to_vec();
-                async move {
-                    let val = trx.get(&key, true).await?;
-                    let mut n = 0i64;
-                    if let Some(bytes) = val {
-                        let s = std::str::from_utf8(&bytes).map_err(|_| {
-                            foundationdb::FdbBindingError::CustomError(
-                                "Value is not valid UTF-8".into(),
-                            )
-                        })?;
-                        n = s.parse::<i64>().map_err(|_| {
-                            foundationdb::FdbBindingError::CustomError(
-                                "Value is not a valid integer".into(),
-                            )
-                        })?;
-                    }
-                    n -= decrement;
-                    trx.set(&key, n.to_string().as_bytes());
-                    Ok(n)
-                }
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB decr_by error: {:?}", e))
+        let val = db.get(key).await.map_err(|e| e.to_string())?;
+        let mut n = 0i64;
+        if let Some(bytes) = val {
+            let s =
+                std::str::from_utf8(&bytes).map_err(|_| "Value is not valid UTF-8".to_string())?;
+            n = s
+                .parse::<i64>()
+                .map_err(|_| "Value is not a valid integer".to_string())?;
+        }
+        n -= decrement;
+        db.set(key, n.to_string().as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     async fn append(&self, key: &[u8], value: &[u8]) -> Result<usize, String> {
         let db = &self.fdb;
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let key = key.to_vec();
-                let value = value.to_vec();
-                async move {
-                    let current = trx.get(&key, true).await?;
-                    let mut new_value = Vec::new();
-                    if let Some(existing) = current {
-                        new_value.extend_from_slice(&existing);
-                    }
-                    new_value.extend_from_slice(&value);
-                    trx.set(&key, &new_value);
-                    Ok(new_value.len())
-                }
-            })
-            .await;
-        res.map_err(|e| format!("FoundationDB append error: {:?}", e))
+        let current = db.get(key).await.map_err(|e| e.to_string())?;
+        let mut new_value = Vec::new();
+        if let Some(existing) = current {
+            new_value.extend_from_slice(&existing);
+        }
+        new_value.extend_from_slice(&value);
+        Ok(new_value.len())
     }
 
     async fn lpush(&self, _key: &[u8], _values: &[&[u8]]) -> Result<usize, String> {
