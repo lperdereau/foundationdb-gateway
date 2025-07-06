@@ -1,7 +1,6 @@
 use crate::FoundationDB;
 use foundationdb_tuple::Subspace;
 use futures::StreamExt;
-use std::collections::HashSet;
 
 pub const MAX_VALUE_SIZE: usize = 100 * 1000; // 100KB
 pub const MAX_TRANSACTION_SIZE: usize = 9 * 1000 * 1000; // 9MB
@@ -76,7 +75,7 @@ impl DataModel {
         key: &[u8],
         batch: &[(usize, Vec<u8>)],
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
-        let subspace = Subspace::from_bytes(key.clone());
+        let subspace = Subspace::from_bytes(key);
         fdb.database
             .run(move |trx, _| {
                 let batch = batch.to_vec();
@@ -126,7 +125,7 @@ impl DataModel {
         key: &[u8],
         num_chunks: usize,
     ) -> std::result::Result<Vec<u8>, foundationdb::FdbBindingError> {
-        let subspace = Subspace::from_bytes(key.clone());
+        let subspace = Subspace::from_bytes(key);
         fdb.database
             .run(move |trx, _| {
                 let mut futs = Vec::with_capacity(num_chunks);
