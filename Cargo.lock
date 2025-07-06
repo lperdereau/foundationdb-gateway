@@ -516,9 +516,11 @@ dependencies = [
  "env_logger",
  "fdb-testcontainer",
  "foundationdb",
+ "foundationdb-tuple",
  "futures",
  "futures-util",
  "log",
+ "rand 0.8.5",
  "thiserror",
  "tokio",
 ]
@@ -1492,7 +1494,6 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
- "rand 0.8.5",
  "redis-protocol",
  "tokio",
 ]

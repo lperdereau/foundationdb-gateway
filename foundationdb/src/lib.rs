@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+pub mod datamodel;
+
 #[derive(Clone)]
 pub struct FoundationDB {
     pub database: Arc<foundationdb::Database>,

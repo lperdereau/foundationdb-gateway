@@ -23,4 +23,3 @@ fdb = { path = "../foundationdb" }
 
 [dev-dependencies]
 fdb-testcontainer = { git = "https://gitlab.com/Akanoa/fdb-testcontainer.git" }
-rand = "0.8"
