@@ -1,5 +1,6 @@
-use foundationdb::Database;
+use crate::FoundationDB;
 use foundationdb_tuple::Subspace;
+use futures::StreamExt;
 use std::collections::HashSet;
 
 pub const MAX_VALUE_SIZE: usize = 100 * 1000; // 100KB
@@ -17,7 +18,7 @@ impl DataModel {
 
     // Function to store chunks in FoundationDB using subspace and packing
     pub async fn store_chunks_in_fdb(
-        db: &Database,
+        fdb: &FoundationDB,
         key: &Vec<u8>,
         chunks: Vec<Vec<u8>>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
@@ -29,7 +30,7 @@ impl DataModel {
             let chunk_size = chunk.len();
             if current_batch_size + chunk_size > MAX_TRANSACTION_SIZE {
                 // Process the current batch
-                Self::store_batch_with_retry(db, key, &batch, &mut successfully_stored).await?;
+                Self::store_batch_with_retry(fdb, key, &batch, &mut successfully_stored).await?;
                 batch.clear();
                 current_batch_size = 0;
             }
@@ -39,7 +40,7 @@ impl DataModel {
 
         // Process any remaining chunks in the batch
         if !batch.is_empty() {
-            Self::store_batch_with_retry(db, key, &batch, &mut successfully_stored).await?;
+            Self::store_batch_with_retry(fdb, key, &batch, &mut successfully_stored).await?;
         }
 
         Ok(())
@@ -47,14 +48,14 @@ impl DataModel {
 
     // Helper function to store a batch of chunks with retry logic
     async fn store_batch_with_retry(
-        db: &Database,
+        fdb: &FoundationDB,
         key: &Vec<u8>,
         batch: &[(usize, Vec<u8>)],
         successfully_stored: &mut HashSet<usize>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let mut retries = 0;
         while retries < MAX_RETRIES {
-            match Self::store_batch_in_fdb(db, key, batch).await {
+            match Self::store_batch_in_fdb(fdb, key, batch).await {
                 Ok(_) => {
                     // Mark chunks as successfully stored
                     for &(i, _) in batch {
@@ -66,7 +67,7 @@ impl DataModel {
                     retries += 1;
                     if retries == MAX_RETRIES {
                         // If all retries fail, clean up any successfully stored chunks
-                        Self::cleanup_failed_chunks(db, key, successfully_stored).await?;
+                        Self::cleanup_failed_chunks(fdb, key, successfully_stored).await?;
                         return Err(e);
                     }
                 }
@@ -77,88 +78,94 @@ impl DataModel {
 
     // Function to store a batch of chunks
     async fn store_batch_in_fdb(
-        db: &Database,
+        fdb: &FoundationDB,
         key: &Vec<u8>,
         batch: &[(usize, Vec<u8>)],
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key.clone());
-        db.run(move |trx, _| {
-            let batch = batch.to_vec();
-            let subspace = subspace.clone();
-            async move {
-                for (i, chunk) in batch {
-                    let chunk_key = subspace.pack(&(i));
-                    trx.set(&chunk_key, &chunk);
+        fdb.database
+            .run(move |trx, _| {
+                let batch = batch.to_vec();
+                let subspace = subspace.clone();
+                async move {
+                    for (i, chunk) in batch {
+                        let chunk_key = subspace.pack(&(i));
+                        trx.set(&chunk_key, &chunk);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
-        .await
+            })
+            .await
     }
 
     // Function to clean up failed chunks
     async fn cleanup_failed_chunks(
-        db: &Database,
+        fdb: &FoundationDB,
         key: &Vec<u8>,
         successfully_stored: &HashSet<usize>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key.clone());
-        db.run(move |trx, _| {
-            let successfully_stored = successfully_stored.clone();
-            let subspace = subspace.clone();
-            async move {
-                for i in successfully_stored {
-                    let chunk_key = subspace.pack(&(i));
-                    trx.clear(&chunk_key);
+        fdb.database
+            .run(move |trx, _| {
+                let successfully_stored = successfully_stored.clone();
+                let subspace = subspace.clone();
+                async move {
+                    for i in successfully_stored {
+                        let chunk_key = subspace.pack(&(i));
+                        trx.clear(&chunk_key);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
-        .await
+            })
+            .await
     }
 
     // Function to retrieve and combine chunks from FoundationDB
     pub async fn retrieve_chunks_from_fdb(
-        db: &Database,
+        fdb: &FoundationDB,
         key: &Vec<u8>,
         num_chunks: usize,
     ) -> std::result::Result<Vec<u8>, foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key.clone());
-        db.run(move |trx, _| {
-            let mut futs = Vec::with_capacity(num_chunks);
-            let subspace = subspace.clone();
-            for i in 0..num_chunks {
-                let chunk_key = subspace.pack(&(i,));
-                futs.push(trx.get(&chunk_key, false));
-            }
-            async move {
-                let mut result = Vec::new();
-                for fut in futs {
-                    if let Some(chunk) = fut.await? {
-                        result.extend_from_slice(&chunk);
-                    }
+        fdb.database
+            .run(move |trx, _| {
+                let mut futs = Vec::with_capacity(num_chunks);
+                let subspace = subspace.clone();
+                for i in 0..num_chunks {
+                    let chunk_key = subspace.pack(&(i,));
+                    futs.push(trx.get(&chunk_key, false));
                 }
-                Ok(result)
-            }
-        })
-        .await
+                async move {
+                    let mut result = Vec::new();
+                    for fut in futs {
+                        if let Some(chunk) = fut.await? {
+                            result.extend_from_slice(&chunk);
+                        }
+                    }
+                    Ok(result)
+                }
+            })
+            .await
     }
 
-    pub async fn count_chunks_in_fdb(
-        db: &Database,
-        key: &Vec<u8>,
-    ) -> std::result::Result<usize, foundationdb::FdbBindingError> {
-        let subspace = Subspace::from_bytes(key.clone());
-        db.run(move |trx, _| {
-            let range = subspace.range();
-            async move {
-                let kvs = trx
-                    .get_range(&foundationdb::RangeOption::from(range), 0, true)
-                    .await?;
-                Ok(kvs.len())
-            }
-        })
-        .await
+    pub async fn reconstruct_bloc(
+        fdb: &FoundationDB,
+        key_prefix: &[u8],
+    ) -> Result<Vec<u8>, foundationdb::FdbBindingError> {
+        let mut end = key_prefix.to_vec();
+        end.push(0xFF);
+
+        let mut bloc = Vec::new();
+        let result = fdb
+            .full_scan(key_prefix, &end)
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        for chunk in result {
+            let (_key, value) = chunk?;
+            bloc.extend_from_slice(&value);
+        }
+        Ok(bloc)
     }
 }
 
@@ -172,10 +179,10 @@ mod tests {
     #[tokio::test]
     async fn test_long_chunk() {
         let _guard = get_db_once().await;
-        let db = _guard.clone();
+        let db = FoundationDB::new(_guard.clone());
         let subspace = Subspace::from_bytes("subspace");
-        let large_data = vec![0; 512 * 10 * MAX_VALUE_SIZE];
         let key = subspace.pack(&("my_large_key"));
+        let large_data = vec![0; 512 * 10 * MAX_VALUE_SIZE];
         let chunks = DataModel::split_into_chunks(&large_data, None);
         let num_chunks = chunks.len();
 
@@ -191,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn test_ordering() {
         let _guard = get_db_once().await;
-        let db = _guard.clone();
+        let db = FoundationDB::new(_guard.clone());
         let subspace = Subspace::from_bytes("subspace");
 
         let mut large_data = vec![0; 100_000_000];
@@ -213,25 +220,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_count_chunks_in_fdb() {
+    async fn test_reconstruct_bloc() {
         let _guard = get_db_once().await;
-        let db = _guard.clone();
-        let subspace = Subspace::from_bytes("subspace_count_chunks");
+        let db = FoundationDB::new(_guard.clone());
+        let subspace = Subspace::from_bytes("subspace_reconstruct");
+        let key = subspace.pack(&("my_bloc_key"));
 
-        // Create data that will be split into multiple chunks
-        let data = vec![42u8; 3 * MAX_VALUE_SIZE + 123];
-        let key = subspace.pack(&("my_count_chunks_key"));
+        // Create some data and chunk it
+        let mut data = vec![0; 512 * 3 * MAX_VALUE_SIZE];
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut data[..]);
+
         let chunks = DataModel::split_into_chunks(&data, None);
-        let num_chunks = chunks.len();
 
         // Store the chunks
-        let res = DataModel::store_chunks_in_fdb(&db, &key, chunks.clone()).await;
+        let res = DataModel::store_chunks_in_fdb(&db, &key, chunks).await;
         assert!(res.is_ok());
 
-        // Count the chunks using the method
-        let count_res = DataModel::count_chunks_in_fdb(&db, &key).await;
-        assert!(count_res.is_ok());
-        let count = count_res.unwrap();
-        assert_eq!(count, num_chunks);
+        // Reconstruct using the new method
+        let reconstructed = DataModel::reconstruct_bloc(&db, &key)
+            .await
+            .expect("reconstruct_bloc failed");
+        assert_eq!(reconstructed, data);
     }
 }
