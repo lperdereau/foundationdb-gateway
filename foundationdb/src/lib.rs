@@ -5,7 +5,6 @@ use futures_util::TryStreamExt;
 use futures_util::stream::StreamExt;
 use std::result::Result;
 use std::sync::Arc;
-
 pub(crate) mod datamodel;
 use datamodel::DataModel;
 

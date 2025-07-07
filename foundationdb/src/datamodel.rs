@@ -23,22 +23,36 @@ impl DataModel {
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let mut current_batch_size = 0;
         let mut batch = Vec::new();
+        let mut batches = Vec::new();
 
         for (i, chunk) in chunks.into_iter().enumerate() {
             let chunk_size = chunk.len();
             if current_batch_size + chunk_size > MAX_TRANSACTION_SIZE {
-                // Process the current batch
-                Self::store_batch_with_retry(fdb, key, &batch).await?;
-                batch.clear();
+                // Save the current batch
+                batches.push(std::mem::take(&mut batch));
                 current_batch_size = 0;
             }
             batch.push((i, chunk));
             current_batch_size += chunk_size;
         }
 
-        // Process any remaining chunks in the batch
+        // Add any remaining batch
         if !batch.is_empty() {
-            Self::store_batch_with_retry(fdb, key, &batch).await?;
+            batches.push(batch);
+        }
+
+        // Spawn all batch futures
+        let futures = batches
+            .into_iter()
+            .map(|b| Self::store_batch_with_retry(fdb, key, b))
+            .collect::<Vec<_>>();
+
+        // Await all in parallel
+        let results = futures::future::join_all(futures).await;
+
+        // Check for errors
+        for res in results {
+            res?; // propagate the first error found
         }
 
         Ok(())
@@ -48,19 +62,18 @@ impl DataModel {
     async fn store_batch_with_retry(
         fdb: &FoundationDB,
         key: &[u8],
-        batch: &[(usize, Vec<u8>)],
+        batch: Vec<(usize, Vec<u8>)>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let mut retries = 0;
+        // Clone the batch for each retry since Vec is moved into the async closure
         while retries < MAX_RETRIES {
-            match Self::store_batch_in_fdb(fdb, key, batch).await {
+            match Self::store_batch_in_fdb(fdb, key, batch.clone()).await {
                 Ok(_) => {
                     return Ok(());
                 }
                 Err(e) => {
                     retries += 1;
                     if retries == MAX_RETRIES {
-                        // If all retries fail, clean up any successfully stored chunks
-                        Self::clean_chunks(fdb, key).await?;
                         return Err(e);
                     }
                 }
@@ -73,7 +86,7 @@ impl DataModel {
     async fn store_batch_in_fdb(
         fdb: &FoundationDB,
         key: &[u8],
-        batch: &[(usize, Vec<u8>)],
+        batch: Vec<(usize, Vec<u8>)>,
     ) -> std::result::Result<(), foundationdb::FdbBindingError> {
         let subspace = Subspace::from_bytes(key);
         fdb.database
