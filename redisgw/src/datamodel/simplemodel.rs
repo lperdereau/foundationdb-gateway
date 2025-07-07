@@ -1,5 +1,5 @@
 use fdb::FoundationDB;
-use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset};
+use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset, pack};
 use std::io::Write;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,7 +23,22 @@ pub struct SimpleDataModel {}
 
 impl SimpleDataModel {
     pub async fn set(fdb: &FoundationDB, key: &[u8], value: &[u8]) -> Result<(), String> {
-        fdb.set(key, value)
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        fdb.set(&packed_key, value)
+            .await
+            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+    }
+
+    pub async fn get(fdb: &FoundationDB, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        fdb.get(&packed_key)
+            .await
+            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+    }
+
+    pub async fn delete(fdb: &FoundationDB, key: &[u8]) -> Result<i64, String> {
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        fdb.delete(&packed_key)
             .await
             .map_err(|e| format!("FoundationDB set error: {:?}", e))
     }

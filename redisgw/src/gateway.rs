@@ -36,7 +36,7 @@ impl RedisOperations for RedisGateway {
     }
 
     async fn get(&self, key: &[u8]) -> Frame {
-        match self.fdb.get(key).await {
+        match SimpleDataModel::get(&self.fdb, key).await {
             Ok(Some(val)) => {
                 // Try to interpret as UTF-8, and quote if possible, else just return as-is
                 match std::str::from_utf8(&val) {
@@ -50,27 +50,25 @@ impl RedisOperations for RedisGateway {
     }
 
     async fn del(&self, key: &[u8]) -> Frame {
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
         if val.is_none() {
             return Frame::Integer(0i64);
         }
-        match db.delete(key).await {
+        match SimpleDataModel::delete(&self.fdb, key).await {
             Ok(val) => Frame::Integer(val),
             Err(e) => Frame::Error(e.to_string().into()),
         }
     }
 
     async fn getdel(&self, key: &[u8]) -> Frame {
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
-        match db.delete(key).await {
+        match SimpleDataModel::delete(&self.fdb, key).await {
             Err(e) => return Frame::Error(e.to_string().into()),
             Ok(_) => (),
         }
@@ -84,8 +82,7 @@ impl RedisOperations for RedisGateway {
     }
 
     async fn incr(&self, key: &[u8]) -> Frame {
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
@@ -101,15 +98,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n += 1;
-        if let Err(e) = db.set(key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
     }
 
     async fn decr(&self, key: &[u8]) -> Frame {
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
@@ -125,7 +121,7 @@ impl RedisOperations for RedisGateway {
             };
         }
         n -= 1;
-        if let Err(e) = db.set(key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -140,8 +136,7 @@ impl RedisOperations for RedisGateway {
             Some(i) => i,
         };
 
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
@@ -157,7 +152,7 @@ impl RedisOperations for RedisGateway {
             };
         }
         n += int;
-        if let Err(e) = db.set(key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -172,8 +167,7 @@ impl RedisOperations for RedisGateway {
             Some(i) => i,
         };
 
-        let db = &self.fdb;
-        let val = match db.get(key).await {
+        let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
@@ -189,15 +183,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n -= int;
-        if let Err(e) = db.set(key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
     }
 
     async fn append(&self, key: &[u8], value: &[u8]) -> Frame {
-        let db = &self.fdb;
-        let current = match db.get(key).await {
+        let current = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
             Err(e) => return Frame::Error(e.to_string().into()),
         };
@@ -207,7 +200,7 @@ impl RedisOperations for RedisGateway {
         }
         new_value.extend_from_slice(value);
         let len = new_value.len();
-        if let Err(e) = db.set(key, &new_value).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, &new_value).await {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(len as i64)
