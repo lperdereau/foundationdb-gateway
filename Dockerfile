@@ -1,6 +1,6 @@
 FROM rust:1.85-bullseye as builder
 
-WORKDIR /usr/src/redis
+WORKDIR /usr/src/gateway
 RUN apt-get update \
     && apt-get install -y clang libclang-dev llvm-dev pkg-config \
     && wget -O /tmp/fdb-client.deb https://github.com/apple/foundationdb/releases/download/7.3.63/foundationdb-clients_7.3.63-1_amd64.deb \
@@ -21,7 +21,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /usr/src/redis/target/release/redisgw /app/redisgw
+COPY --from=builder /usr/src/gateway/target/release/redisgw /app/redisgw
 
 # Set the default command to run your binary
 CMD ["./redisgw"]

@@ -1,0 +1,11 @@
+*
+!Cargo.toml
+!Cargo.lock
+!redisgw/src
+!redisgw/.gitignore
+!redisgw/Cargo.lock
+!redisgw/Cargo.toml
+!foundationdb/src
+!foundationdb/.gitignore
+!foundationdb/Cargo.lock
+!foundationdb/Cargo.toml
