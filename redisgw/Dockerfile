@@ -21,7 +21,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /usr/src/redis/target/release/redis /app/redis
+COPY --from=builder /usr/src/redis/target/release/redisgw /app/redisgw
 
 # Set the default command to run your binary
-CMD ["./redis"]
+CMD ["./redisgw"]
