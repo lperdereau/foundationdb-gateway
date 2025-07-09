@@ -1,5 +1,5 @@
 use crate::datamodel::SimpleDataModel;
-use crate::operations::RedisOperations;
+use crate::operations::{Flags, RedisOperations, SetFlags};
 use fdb::FoundationDB;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
@@ -28,10 +28,15 @@ impl RedisOperations for RedisGateway {
         }
     }
 
-    async fn set(&self, key: &[u8], value: &[u8]) -> Frame {
-        match SimpleDataModel::set(&self.fdb, key, value).await {
-            Ok(_) => Frame::SimpleString(b"OK".to_vec()),
-            Err(e) => Frame::Error(e.into()),
+    async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame {
+        let args = match extra_args {
+            Flags::Set(set_flags) => set_flags,
+            _ => return Frame::Error("fail to parse argument".to_string()),
+        };
+        match SimpleDataModel::set(&self.fdb, key, value, args).await {
+            Ok(Some(val)) => Frame::SimpleString(val),
+            Ok(None) => Frame::SimpleString("OK".to_string().into_bytes()),
+            Err(e) => Frame::Error(e.to_string()),
         }
     }
 
@@ -98,7 +103,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n += 1;
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(
+            &self.fdb,
+            key,
+            n.to_string().as_bytes(),
+            SetFlags::default(),
+        )
+        .await
+        {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -121,7 +133,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n -= 1;
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(
+            &self.fdb,
+            key,
+            n.to_string().as_bytes(),
+            SetFlags::default(),
+        )
+        .await
+        {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -152,7 +171,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n += int;
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(
+            &self.fdb,
+            key,
+            n.to_string().as_bytes(),
+            SetFlags::default(),
+        )
+        .await
+        {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -183,7 +209,14 @@ impl RedisOperations for RedisGateway {
             };
         }
         n -= int;
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, n.to_string().as_bytes()).await {
+        if let Err(e) = SimpleDataModel::set(
+            &self.fdb,
+            key,
+            n.to_string().as_bytes(),
+            SetFlags::default(),
+        )
+        .await
+        {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(n)
@@ -200,7 +233,8 @@ impl RedisOperations for RedisGateway {
         }
         new_value.extend_from_slice(value);
         let len = new_value.len();
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, &new_value).await {
+        if let Err(e) = SimpleDataModel::set(&self.fdb, key, &new_value, SetFlags::default()).await
+        {
             return Frame::Error(e.to_string().into());
         }
         Frame::Integer(len as i64)

@@ -1,3 +1,4 @@
+use crate::operations::{SetFlags, SetMethod, SetTTL};
 use fdb::FoundationDB;
 use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset, pack};
 use std::io::Write;
@@ -22,11 +23,66 @@ impl TuplePack for SimpleDataPrefix {
 pub struct SimpleDataModel {}
 
 impl SimpleDataModel {
-    pub async fn set(fdb: &FoundationDB, key: &[u8], value: &[u8]) -> Result<(), String> {
+    pub async fn set(
+        fdb: &FoundationDB,
+        key: &[u8],
+        value: &[u8],
+        flags: SetFlags,
+    ) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        let mut old_val = None;
+
+        let existing = if flags.get || flags.method.is_some() {
+            SimpleDataModel::get(fdb, key)
+                .await
+                .map_err(|e| format!("FoundationDB set error: {:?}", e))?
+        } else {
+            None
+        };
+
+        if flags.get {
+            old_val = existing.clone();
+        }
+
+        if let Some(method) = &flags.method {
+            match method {
+                SetMethod::NX => {
+                    if existing.is_some() {
+                        return Ok(None);
+                    }
+                }
+                SetMethod::XX => {
+                    if existing.is_none() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
         fdb.set(&packed_key, value)
             .await
-            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+            .map_err(|e| format!("FoundationDB set error: {:?}", e))?;
+
+        if let Some(ttl_option) = &flags.ttl {
+            let ttl = ttl_option
+                .unix_epoch_in_ms()
+                .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
+            if *ttl_option != SetTTL::KEPPTTL {
+                SimpleDataModel::set_ttl(fdb, key, ttl)
+                    .await
+                    .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
+            }
+        }
+
+        Ok(old_val)
+    }
+
+    pub async fn set_ttl(fdb: &FoundationDB, key: &[u8], ttl: u128) -> Result<(), String> {
+        let packed_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let ttl_bytes = ttl.to_be_bytes();
+        fdb.set(&packed_key, &ttl_bytes)
+            .await
+            .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))
     }
 
     pub async fn get(fdb: &FoundationDB, key: &[u8]) -> Result<Option<Vec<u8>>, String> {

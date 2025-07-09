@@ -1,4 +1,67 @@
 use redis_protocol::resp2::types::OwnedFrame as Frame;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Flags {
+    Set(SetFlags),
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetFlags {
+    pub method: Option<SetMethod>,
+    pub ttl: Option<SetTTL>,
+    pub get: bool,
+}
+
+impl SetFlags {
+    pub fn default() -> Self {
+        Self {
+            method: None,
+            ttl: None,
+            get: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetTTL {
+    /// Set expiry in seconds.
+    EX(u64),
+    /// Set expiry in milliseconds.
+    PX(u64),
+    /// Set expiry at a specific unix time in seconds.
+    EXAT(u64),
+    /// Set expiry at a specific unix time in milliseconds.
+    PXAT(u64),
+    /// Keep the existing TTL.
+    KEPPTTL,
+}
+
+impl SetTTL {
+    pub fn unix_epoch_in_ms(&self) -> Result<u128, String> {
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(val) => val,
+            Err(e) => return Err(format!("SystemTime error: {:?}", e)),
+        };
+
+        match self {
+            SetTTL::EX(secs) => Ok((now + Duration::from_secs(secs.clone())).as_millis()),
+            SetTTL::PX(ms) => Ok((now + Duration::from_millis(ms.clone())).as_millis()),
+            SetTTL::EXAT(timestamp) => Ok(Duration::from_secs(timestamp.clone()).as_millis()),
+            SetTTL::PXAT(timestamp) => Ok(Duration::from_millis(timestamp.clone()).as_millis()),
+            SetTTL::KEPPTTL => Ok(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetMethod {
+    /// Only set the key if it does not already exist.
+    NX,
+    /// Only set the key if it already exists.
+    XX,
+}
 
 #[allow(dead_code)]
 pub trait RedisOperations {
@@ -6,7 +69,7 @@ pub trait RedisOperations {
     async fn ping(&self, message: Vec<&[u8]>) -> Frame;
 
     /// Sets the value of a key.
-    async fn set(&self, key: &[u8], value: &[u8]) -> Frame;
+    async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame;
 
     /// Gets the value of a key.
     async fn get(&self, key: &[u8]) -> Frame;
