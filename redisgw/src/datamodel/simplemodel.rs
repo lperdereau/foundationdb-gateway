@@ -79,8 +79,7 @@ impl SimpleDataModel {
 
     pub async fn set_ttl(fdb: &FoundationDB, key: &[u8], ttl: u128) -> Result<(), String> {
         let packed_key = pack(&(SimpleDataPrefix::Ttl, key));
-        let ttl_bytes = ttl.to_be_bytes();
-        fdb.set(&packed_key, &ttl_bytes)
+        fdb.set(&packed_key, &ttl.to_string().into_bytes())
             .await
             .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))
     }
