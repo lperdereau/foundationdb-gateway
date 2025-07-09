@@ -10,7 +10,7 @@ pub enum Flags {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetFlags {
     pub method: Option<SetMethod>,
-    pub ttl: Option<SetTTL>,
+    pub ttl: SetTTL,
     pub get: bool,
 }
 
@@ -18,7 +18,7 @@ impl SetFlags {
     pub fn default() -> Self {
         Self {
             method: None,
-            ttl: None,
+            ttl: SetTTL::NONE,
             get: false,
         }
     }
@@ -36,21 +36,41 @@ pub enum SetTTL {
     PXAT(u64),
     /// Keep the existing TTL.
     KEPPTTL,
+    /// None
+    NONE,
 }
 
 impl SetTTL {
-    pub fn unix_epoch_in_ms(&self) -> Result<u128, String> {
+    pub fn unix_epoch_in_ms(&self) -> Result<i64, String> {
         let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(val) => val,
             Err(e) => return Err(format!("SystemTime error: {:?}", e)),
         };
 
         match self {
-            SetTTL::EX(secs) => Ok((now + Duration::from_secs(secs.clone())).as_millis()),
-            SetTTL::PX(ms) => Ok((now + Duration::from_millis(ms.clone())).as_millis()),
-            SetTTL::EXAT(timestamp) => Ok(Duration::from_secs(timestamp.clone()).as_millis()),
-            SetTTL::PXAT(timestamp) => Ok(Duration::from_millis(timestamp.clone()).as_millis()),
+            SetTTL::EX(secs) => {
+                let ms = (now + Duration::from_secs(*secs)).as_millis();
+                ms.try_into()
+                    .map_err(|_| "Overflow converting EX to i64".to_string())
+            }
+            SetTTL::PX(ms) => {
+                let ms_total = (now + Duration::from_millis(*ms)).as_millis();
+                ms_total
+                    .try_into()
+                    .map_err(|_| "Overflow converting PX to i64".to_string())
+            }
+            SetTTL::EXAT(timestamp) => {
+                let ms = Duration::from_secs(*timestamp).as_millis();
+                ms.try_into()
+                    .map_err(|_| "Overflow converting EXAT to i64".to_string())
+            }
+            SetTTL::PXAT(timestamp) => {
+                let ms = Duration::from_millis(*timestamp).as_millis();
+                ms.try_into()
+                    .map_err(|_| "Overflow converting PXAT to i64".to_string())
+            }
             SetTTL::KEPPTTL => Ok(0),
+            SetTTL::NONE => Ok(-1),
         }
     }
 }

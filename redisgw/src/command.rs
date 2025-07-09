@@ -95,7 +95,7 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
     use crate::operations::{SetFlags, SetMethod, SetTTL};
 
     let mut method: Option<SetMethod> = None;
-    let mut ttl: Option<SetTTL> = None;
+    let mut ttl: SetTTL = SetTTL::NONE;
     let mut get: bool = false;
 
     let mut args = extra_args.iter().peekable();
@@ -120,16 +120,16 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
                     Some(val) => val,
                     None => continue, // skip if invalid value
                 };
-                ttl = Some(match s.as_str() {
+                ttl = match s.as_str() {
                     "EX" => SetTTL::EX(n),
                     "PX" => SetTTL::PX(n),
                     "EXAT" => SetTTL::EXAT(n),
                     "PXAT" => SetTTL::PXAT(n),
                     _ => unreachable!(),
-                });
+                };
             }
-            "KEPPTTL" => ttl = Some(SetTTL::KEPPTTL),
-            _ => {} // ignore unknown options
+            "KEPPTTL" => ttl = SetTTL::KEPPTTL,
+            _ => unreachable!(),
         }
     }
 

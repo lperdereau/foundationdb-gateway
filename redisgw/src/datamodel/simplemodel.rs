@@ -30,7 +30,7 @@ impl SimpleDataModel {
         flags: SetFlags,
     ) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        let mut old_val = Some("Ok".pack_to_vec());
+        let mut old_val = Some("OK".pack_to_vec());
 
         let existing = if flags.get || flags.method.is_some() {
             SimpleDataModel::get(fdb, key)
@@ -63,15 +63,15 @@ impl SimpleDataModel {
             .await
             .map_err(|e| format!("FoundationDB set error: {:?}", e))?;
 
-        if let Some(ttl_option) = &flags.ttl {
-            let ttl = ttl_option
+        if flags.ttl != SetTTL::KEPPTTL {
+            let ttl = flags
+                .ttl
                 .unix_epoch_in_ms()
                 .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
-            if *ttl_option != SetTTL::KEPPTTL {
-                SimpleDataModel::set_ttl(fdb, key, ttl)
-                    .await
-                    .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
-            }
+
+            SimpleDataModel::set_ttl(fdb, key, ttl.try_into().unwrap())
+                .await
+                .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
         }
 
         Ok(old_val)
