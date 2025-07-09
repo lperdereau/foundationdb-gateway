@@ -94,9 +94,10 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
     // Assume SetFlags, SetMethod, SetTTL are defined in crate::operations
     use crate::operations::{SetFlags, SetMethod, SetTTL};
 
-    let mut method: Option<SetMethod> = None;
-    let mut ttl: SetTTL = SetTTL::NONE;
-    let mut get: bool = false;
+    // let mut method: Option<SetMethod> = None;
+    // let mut ttl: SetTTL = SetTTL::NONE;
+    // let mut get: bool = false;
+    let mut flags = SetFlags::default();
 
     let mut args = extra_args.iter().peekable();
     while let Some(arg) = args.next() {
@@ -105,9 +106,9 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
             Err(_) => continue, // skip invalid utf-8
         };
         match s.as_str() {
-            "NX" => method = Some(SetMethod::NX),
-            "XX" => method = Some(SetMethod::XX),
-            "GET" => get = true,
+            "NX" => flags.method = Some(SetMethod::NX),
+            "XX" => flags.method = Some(SetMethod::XX),
+            "GET" => flags.get = true,
             "EX" | "PX" | "EXAT" | "PXAT" => {
                 let next = match args.next() {
                     Some(n) => n,
@@ -120,18 +121,18 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
                     Some(val) => val,
                     None => continue, // skip if invalid value
                 };
-                ttl = match s.as_str() {
+                flags.ttl = match s.as_str() {
                     "EX" => SetTTL::EX(n),
                     "PX" => SetTTL::PX(n),
                     "EXAT" => SetTTL::EXAT(n),
                     "PXAT" => SetTTL::PXAT(n),
-                    _ => unreachable!(),
+                    _ => (),
                 };
             }
-            "KEPPTTL" => ttl = SetTTL::KEPPTTL,
-            _ => unreachable!(),
+            "KEPPTTL" => flags.ttl = SetTTL::KEPPTTL,
+            _ => (),
         }
     }
 
-    SetFlags { method, ttl, get }
+    flags
 }
