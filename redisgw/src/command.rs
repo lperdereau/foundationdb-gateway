@@ -1,7 +1,7 @@
 use crate::gateway::RedisGateway;
 use crate::operations::Flags;
 use crate::operations::RedisOperations;
-use crate::operations::SetFlags;
+use crate::operations::{SetFlags, SetMethod, SetTTL};
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 #[derive(Debug, Clone, Copy)]
@@ -91,12 +91,6 @@ fn parse_extra_args(cmd: Command, extra_args: &[&[u8]]) -> Flags {
 }
 
 fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
-    // Assume SetFlags, SetMethod, SetTTL are defined in crate::operations
-    use crate::operations::{SetFlags, SetMethod, SetTTL};
-
-    // let mut method: Option<SetMethod> = None;
-    // let mut ttl: SetTTL = SetTTL::NONE;
-    // let mut get: bool = false;
     let mut flags = SetFlags::default();
 
     let mut args = extra_args.iter().peekable();
