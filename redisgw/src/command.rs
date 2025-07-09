@@ -126,7 +126,7 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
                     "PX" => SetTTL::PX(n),
                     "EXAT" => SetTTL::EXAT(n),
                     "PXAT" => SetTTL::PXAT(n),
-                    _ => (),
+                    _ => unreachable!(),
                 };
             }
             "KEPPTTL" => flags.ttl = SetTTL::KEPPTTL,
