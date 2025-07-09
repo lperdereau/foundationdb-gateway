@@ -35,7 +35,7 @@ impl RedisOperations for RedisGateway {
         };
         match SimpleDataModel::set(&self.fdb, key, value, args).await {
             Ok(Some(val)) => Frame::SimpleString(val),
-            Ok(None) => Frame::SimpleString("OK".to_string().into_bytes()),
+            Ok(None) => Frame::Null,
             Err(e) => Frame::Error(e.to_string()),
         }
     }

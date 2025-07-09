@@ -30,7 +30,7 @@ impl SimpleDataModel {
         flags: SetFlags,
     ) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        let mut old_val = None;
+        let mut old_val = Some("Ok".pack_to_vec());
 
         let existing = if flags.get || flags.method.is_some() {
             SimpleDataModel::get(fdb, key)
