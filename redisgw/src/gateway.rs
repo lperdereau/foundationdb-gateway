@@ -31,6 +31,7 @@ impl RedisOperations for RedisGateway {
     async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame {
         let args = match extra_args {
             Flags::Set(set_flags) => set_flags,
+            Flags::None => SetFlags::default(),
             _ => return Frame::Error("fail to parse argument".to_string()),
         };
         match SimpleDataModel::set(&self.fdb, key, value, args).await {

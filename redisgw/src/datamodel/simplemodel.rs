@@ -69,7 +69,7 @@ impl SimpleDataModel {
                 .unix_epoch_in_ms()
                 .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
 
-            SimpleDataModel::set_ttl(fdb, key, ttl.try_into().unwrap())
+            SimpleDataModel::set_ttl(fdb, key, ttl)
                 .await
                 .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
         }
@@ -77,7 +77,7 @@ impl SimpleDataModel {
         Ok(old_val)
     }
 
-    pub async fn set_ttl(fdb: &FoundationDB, key: &[u8], ttl: u128) -> Result<(), String> {
+    pub async fn set_ttl(fdb: &FoundationDB, key: &[u8], ttl: i64) -> Result<(), String> {
         let packed_key = pack(&(SimpleDataPrefix::Ttl, key));
         fdb.set(&packed_key, &ttl.to_string().into_bytes())
             .await
