@@ -1,7 +1,10 @@
 use crate::gateway::RedisGateway;
-use crate::operations::Flags;
-use crate::operations::RedisOperations;
-use crate::operations::SetFlags;
+use crate::operations::{
+    Flags,
+    SetFlags,
+    ConnectionOperations,
+    StringOperations,
+};
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 #[derive(Debug, Clone, Copy)]

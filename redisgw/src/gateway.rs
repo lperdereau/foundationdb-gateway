@@ -1,5 +1,12 @@
 use crate::datamodel::SimpleDataModel;
-use crate::operations::{Flags, RedisOperations, SetFlags};
+use crate::operations::{
+    Flags,
+    SetFlags,
+    ConnectionOperations,
+    StringOperations,
+    ListOperations,
+    SetOperations,
+};
 use fdb::FoundationDB;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
@@ -14,7 +21,7 @@ impl RedisGateway {
     }
 }
 
-impl RedisOperations for RedisGateway {
+impl ConnectionOperations for RedisGateway {
     async fn ping(&self, message: Vec<&[u8]>) -> Frame {
         let msg = if let Some(arg) = message.get(0) {
             std::str::from_utf8(arg).ok()
@@ -27,7 +34,9 @@ impl RedisOperations for RedisGateway {
             None => Frame::SimpleString(b"PONG".to_vec()),
         }
     }
+}
 
+impl StringOperations for RedisGateway {
     async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame {
         let args = match extra_args {
             Flags::Set(set_flags) => set_flags,
@@ -239,7 +248,9 @@ impl RedisOperations for RedisGateway {
         }
         Frame::Integer(len as i64)
     }
+}
 
+impl ListOperations for RedisGateway {
     async fn lpush(&self, _key: &[u8], _values: &[&[u8]]) -> Frame {
         unimplemented!()
     }
@@ -267,7 +278,9 @@ impl RedisOperations for RedisGateway {
     async fn llen(&self, _key: &[u8]) -> Frame {
         unimplemented!()
     }
+}
 
+impl SetOperations for RedisGateway {
     async fn sadd(&self, _key: &[u8], _members: &[&[u8]]) -> Frame {
         unimplemented!()
     }

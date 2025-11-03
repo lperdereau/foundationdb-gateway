@@ -2,6 +2,7 @@ use crate::operations::{SetFlags, SetMethod, SetTTL};
 use fdb::FoundationDB;
 use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset, pack};
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SimpleDataPrefix {
@@ -87,9 +88,52 @@ impl SimpleDataModel {
 
     pub async fn get(fdb: &FoundationDB, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        fdb.get(&packed_key)
+        // Read value and TTL (if any). If TTL exists and is expired, delete both and return None.
+        let value = fdb
+            .get(&packed_key)
             .await
-            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+            .map_err(|e| format!("FoundationDB get error: {:?}", e))?;
+
+        // If there's no value, nothing to do.
+        if value.is_none() {
+            return Ok(None);
+        }
+
+        // Check TTL
+        let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let ttl_bytes_opt = fdb
+            .get(&packed_ttl_key)
+            .await
+            .map_err(|e| format!("FoundationDB get ttl error: {:?}", e))?;
+
+        if let Some(ttl_bytes) = ttl_bytes_opt {
+            // TTL stored as big-endian u128
+            if ttl_bytes.len() == 16 {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&ttl_bytes[..16]);
+                let ttl = u128::from_be_bytes(arr);
+
+                let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_millis() as u128,
+                    Err(_) => 0u128,
+                };
+
+                if ttl != 0 && ttl <= now {
+                    // expired -> delete both keys
+                    let _ = fdb
+                        .delete(&packed_key)
+                        .await
+                        .map_err(|e| format!("FoundationDB delete expired error: {:?}", e))?;
+                    let _ = fdb
+                        .delete(&packed_ttl_key)
+                        .await
+                        .map_err(|e| format!("FoundationDB delete expired ttl error: {:?}", e))?;
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(value)
     }
 
     pub async fn delete(fdb: &FoundationDB, key: &[u8]) -> Result<i64, String> {

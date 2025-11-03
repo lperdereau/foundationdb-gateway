@@ -64,10 +64,13 @@ pub enum SetMethod {
 }
 
 #[allow(dead_code)]
-pub trait RedisOperations {
+pub trait ConnectionOperations {
     /// Responds to a PING command with an optional message.
     async fn ping(&self, message: Vec<&[u8]>) -> Frame;
+}
 
+#[allow(dead_code)]
+pub trait StringOperations {
     /// Sets the value of a key.
     async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame;
 
@@ -94,7 +97,10 @@ pub trait RedisOperations {
 
     /// Appends a value to a key.
     async fn append(&self, key: &[u8], value: &[u8]) -> Frame;
+}
 
+#[allow(dead_code)]
+pub trait ListOperations {
     /// Inserts all the specified values at the head of the list stored at key.
     async fn lpush(&self, key: &[u8], values: &[&[u8]]) -> Frame;
 
@@ -115,7 +121,10 @@ pub trait RedisOperations {
 
     /// Returns the length of the list stored at key.
     async fn llen(&self, key: &[u8]) -> Frame;
+}
 
+#[allow(dead_code)]
+pub trait SetOperations {
     /// Adds the specified members to the set stored at key.
     async fn sadd(&self, key: &[u8], members: &[&[u8]]) -> Frame;
 
