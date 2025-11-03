@@ -19,7 +19,7 @@ async fn test_set_with_ttl() {
 
     let _ = gw.set(b"ttlkey", b"value", Flags::Set(flags)).await;
     let result = gw.get(b"ttlkey").await;
-    assert_eq!(result, Frame::SimpleString(b"\"value\"".to_vec()));
+    assert_eq!(result, Frame::BulkString(b"value".to_vec()));
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
 

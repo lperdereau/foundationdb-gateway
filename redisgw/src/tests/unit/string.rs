@@ -14,14 +14,14 @@ async fn test_insert_record() {
 
     let _ = gw.set(b"key", b"value", Flags::None).await;
     let result = gw.get(b"key").await;
-    assert_eq!(result, Frame::SimpleString(b"\"value\"".to_vec()));
+    assert_eq!(result, Frame::BulkString(b"value".to_vec()));
     let _ = gw.del(b"key").await;
     let result = gw.get(b"key").await;
     assert_eq!(result, Frame::Null);
 
     let _ = gw.set(b"key", b"value", Flags::None).await;
     let result = gw.getdel(b"key").await;
-    assert_eq!(result, Frame::SimpleString(b"\"value\"".to_vec()));
+    assert_eq!(result, Frame::BulkString(b"value".to_vec()));
     let result = gw.getdel(b"key").await;
     assert_eq!(result, Frame::Null);
 }
@@ -86,7 +86,7 @@ async fn test_set_overwrite() {
     let _ = gw.set(b"ow", b"v1", crate::operations::Flags::None).await;
     let _ = gw.set(b"ow", b"v2", crate::operations::Flags::None).await;
     let res = gw.get(b"ow").await;
-    assert_eq!(res, Frame::SimpleString(b"\"v2\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"v2".to_vec()));
     let _ = gw.del(b"ow").await;
 }
 
@@ -103,7 +103,7 @@ async fn test_set_nx_xx() {
     // second NX should not overwrite
     let _ = gw.set(b"nxkey", b"v2", crate::operations::Flags::Set(flags)).await;
     let res = gw.get(b"nxkey").await;
-    assert_eq!(res, Frame::SimpleString(b"\"v1\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"v1".to_vec()));
 
     let _ = gw.del(b"nxkey").await;
 
@@ -118,7 +118,7 @@ async fn test_set_nx_xx() {
     let _ = gw.set(b"xxkey", b"v0", crate::operations::Flags::None).await;
     let _ = gw.set(b"xxkey", b"v1", crate::operations::Flags::Set(flags_xx)).await;
     let res = gw.get(b"xxkey").await;
-    assert_eq!(res, Frame::SimpleString(b"\"v1\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"v1".to_vec()));
     let _ = gw.del(b"xxkey").await;
 }
 
@@ -165,7 +165,7 @@ async fn test_concurrent_incr() {
 
     let res = gw.get(key).await;
     // expect 200 increments
-    assert_eq!(res, Frame::SimpleString(b"\"200\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"200".to_vec()));
     let _ = gw.del(key).await;
 }
 
@@ -179,7 +179,7 @@ async fn test_set_with_ttl_ex_px() {
     let _ = gw.set(b"ttl_key", b"vttl", Flags::Set(flags)).await;
     // immediately available
     let res = gw.get(b"ttl_key").await;
-    assert_eq!(res, Frame::SimpleString(b"\"vttl\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"vttl".to_vec()));
 
     // wait for expiry (>100ms)
     sleep(Duration::from_millis(200)).await;
@@ -204,7 +204,7 @@ async fn test_keep_ttl_preserved_on_set() {
     // after short wait (<300ms) key still exists
     sleep(Duration::from_millis(150)).await;
     let res = gw.get(b"keep_ttl").await;
-    assert_eq!(res, Frame::SimpleString(b"\"v2\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"v2".to_vec()));
 
     // after TTL passes, key should be gone
     sleep(Duration::from_millis(200)).await;
@@ -223,13 +223,13 @@ async fn test_append_empty_and_nonempty() {
     // append returns Integer with length; accept Integer
     assert!(matches!(r, Frame::Integer(_)));
     let res = gw.get(b"app_key").await;
-    assert_eq!(res, Frame::SimpleString(b"\"hello\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"hello".to_vec()));
 
     // append more
     let r = gw.append(b"app_key", b", you").await;
     assert!(matches!(r, Frame::Integer(_)));
     let res = gw.get(b"app_key").await;
-    assert_eq!(res, Frame::SimpleString(b"\"hello, you\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"hello, you".to_vec()));
 }
 
 #[tokio::test]
@@ -244,11 +244,11 @@ async fn test_set_get_with_getflag_returns_old_value() {
     // set with GET should return previous value
     let flags = SetFlags { method: None, ttl: None, get: true };
     let res = gw.set(b"getflag", b"new", Flags::Set(flags)).await;
-    assert_eq!(res, Frame::SimpleString(b"old".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"old".to_vec()));
 
     // confirm new value stored
     let res = gw.get(b"getflag").await;
-    assert_eq!(res, Frame::SimpleString(b"\"new\"".to_vec()));
+    assert_eq!(res, Frame::BulkString(b"new".to_vec()));
 }
 
 // Concurrent large writes to the same key should not produce corrupted values.
@@ -287,12 +287,8 @@ async fn test_concurrent_large_writes() {
     // Read back the stored value and ensure it matches exactly one of the payloads.
     let res = gw.get(key).await;
     match res {
-        Frame::SimpleString(bytes) => {
-            // gateway.get returns a quoted string like "aaaa..."
-            if bytes.len() < 2 {
-                panic!("stored value too small");
-            }
-            let inner = &bytes[1..bytes.len() - 1];
+        Frame::BulkString(bytes) => {
+            let inner = &bytes[..];
             // Check equality with any payload
             let mut matched = false;
             for p in payloads.iter() {

@@ -44,7 +44,7 @@ impl StringOperations for RedisGateway {
             Flags::None => SetFlags::default(),
         };
         match SimpleDataModel::set(&self.fdb, key, value, args).await {
-            Ok(Some(val)) => Frame::SimpleString(val),
+            Ok(Some(val)) => Frame::BulkString(val),
             Ok(None) => Frame::SimpleString("OK".to_string().into_bytes()),
             Err(e) => Frame::Error(e.to_string()),
         }
@@ -52,13 +52,7 @@ impl StringOperations for RedisGateway {
 
     async fn get(&self, key: &[u8]) -> Frame {
         match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(Some(val)) => {
-                // Try to interpret as UTF-8, and quote if possible, else just return as-is
-                match std::str::from_utf8(&val) {
-                    Ok(s) => Frame::SimpleString(format!("\"{}\"", s).into()),
-                    Err(e) => Frame::Error(e.to_string().into()),
-                }
-            }
+            Ok(Some(val)) => Frame::BulkString(val),
             Ok(None) => Frame::Null,
             Err(e) => Frame::Error(e.to_string().into()),
         }
@@ -88,10 +82,7 @@ impl StringOperations for RedisGateway {
             Ok(_) => (),
         }
         match val {
-            Some(val) => match std::str::from_utf8(&val) {
-                Ok(s) => Frame::SimpleString(format!("\"{}\"", s).into_bytes()),
-                Err(e) => Frame::Error(e.to_string().into()),
-            },
+            Some(val) => Frame::BulkString(val),
             None => Frame::Null,
         }
     }

@@ -38,8 +38,8 @@ async fn test_e2e_set_get_via_tcp() {
     let n = stream.read(&mut buf).await.expect("read2");
     let opt = decode(&buf[..n]).expect("decode2");
     let (frame, _used) = opt.expect("frame2");
-    // Gateway returns SimpleString with quotes: "hello"
-    assert!(matches!(frame, Frame::SimpleString(s) if s == b"\"hello\"".to_vec()));
+    // Gateway returns bulk string with raw value: hello
+    assert!(matches!(frame, Frame::BulkString(s) if s == b"hello".to_vec()));
 
     // Tear down: drop stream and abort server
     drop(stream);
