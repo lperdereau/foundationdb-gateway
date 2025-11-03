@@ -1,8 +1,10 @@
 use crate::gateway::RedisGateway;
-use crate::operations::{Flags, StringOperations};
+use crate::operations::{Flags, SetFlags, StringOperations, SetTTL};
 use fdb::FoundationDB;
 use fdb_testcontainer::get_db_once;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
+use tokio::time::{sleep, Duration};
+use futures::future::join_all;
 
 #[tokio::test]
 async fn test_insert_record() {
@@ -165,4 +167,142 @@ async fn test_concurrent_incr() {
     // expect 200 increments
     assert_eq!(res, Frame::SimpleString(b"\"200\"".to_vec()));
     let _ = gw.del(key).await;
+}
+
+#[tokio::test]
+async fn test_set_with_ttl_ex_px() {
+    let _guard = get_db_once().await;
+    let db = FoundationDB::new(_guard.clone());
+    let gw = RedisGateway::new(db);
+
+    let flags = SetFlags { method: None, ttl: Some(SetTTL::PX(100)), get: false };
+    let _ = gw.set(b"ttl_key", b"vttl", Flags::Set(flags)).await;
+    // immediately available
+    let res = gw.get(b"ttl_key").await;
+    assert_eq!(res, Frame::SimpleString(b"\"vttl\"".to_vec()));
+
+    // wait for expiry (>100ms)
+    sleep(Duration::from_millis(200)).await;
+    let res = gw.get(b"ttl_key").await;
+    assert_eq!(res, Frame::Null);
+}
+
+#[tokio::test]
+async fn test_keep_ttl_preserved_on_set() {
+    let _guard = get_db_once().await;
+    let db = FoundationDB::new(_guard.clone());
+    let gw = RedisGateway::new(db);
+
+    // set initial key with 300ms TTL
+    let flags_init = SetFlags { method: None, ttl: Some(SetTTL::PX(300)), get: false };
+    let _ = gw.set(b"keep_ttl", b"v1", Flags::Set(flags_init)).await;
+
+    // replace value but keep TTL
+    let flags_keep = SetFlags { method: None, ttl: Some(SetTTL::KEPPTTL), get: false };
+    let _ = gw.set(b"keep_ttl", b"v2", Flags::Set(flags_keep)).await;
+
+    // after short wait (<300ms) key still exists
+    sleep(Duration::from_millis(150)).await;
+    let res = gw.get(b"keep_ttl").await;
+    assert_eq!(res, Frame::SimpleString(b"\"v2\"".to_vec()));
+
+    // after TTL passes, key should be gone
+    sleep(Duration::from_millis(200)).await;
+    let res = gw.get(b"keep_ttl").await;
+    assert_eq!(res, Frame::Null);
+}
+
+#[tokio::test]
+async fn test_append_empty_and_nonempty() {
+    let _guard = get_db_once().await;
+    let db = FoundationDB::new(_guard.clone());
+    let gw = RedisGateway::new(db);
+
+    // append to missing key creates it
+    let r = gw.append(b"app_key", b"hello").await;
+    // append returns Integer with length; accept Integer
+    assert!(matches!(r, Frame::Integer(_)));
+    let res = gw.get(b"app_key").await;
+    assert_eq!(res, Frame::SimpleString(b"\"hello\"".to_vec()));
+
+    // append more
+    let r = gw.append(b"app_key", b", you").await;
+    assert!(matches!(r, Frame::Integer(_)));
+    let res = gw.get(b"app_key").await;
+    assert_eq!(res, Frame::SimpleString(b"\"hello, you\"".to_vec()));
+}
+
+#[tokio::test]
+async fn test_set_get_with_getflag_returns_old_value() {
+    let _guard = get_db_once().await;
+    let db = FoundationDB::new(_guard.clone());
+    let gw = RedisGateway::new(db);
+
+    // initial set
+    let _ = gw.set(b"getflag", b"old", Flags::None).await;
+
+    // set with GET should return previous value
+    let flags = SetFlags { method: None, ttl: None, get: true };
+    let res = gw.set(b"getflag", b"new", Flags::Set(flags)).await;
+    assert_eq!(res, Frame::SimpleString(b"\"old\"".to_vec()));
+
+    // confirm new value stored
+    let res = gw.get(b"getflag").await;
+    assert_eq!(res, Frame::SimpleString(b"\"new\"".to_vec()));
+}
+
+// Concurrent large writes to the same key should not produce corrupted values.
+// The SimpleDataModel uses a per-key lock to serialize large writes; this test
+// ensures that after many concurrent writers, the stored value is exactly one
+// of the writers' payloads.
+#[tokio::test]
+async fn test_concurrent_large_writes() {
+    let _guard = get_db_once().await;
+    let db = FoundationDB::new(_guard.clone());
+    let gw = RedisGateway::new(db.clone());
+
+    let key = b"concurrent_big_key";
+
+    // Prepare distinct ASCII payloads (valid UTF-8) of ~120KB each.
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    for i in 0..8 {
+        let ch = (b'a' + (i as u8 % 26)) as u8;
+        payloads.push(vec![ch; 120_000]);
+    }
+
+    // Spawn concurrent tasks that perform a single large SET each.
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let gw = RedisGateway::new(db.clone());
+            let payload = payloads[i].clone();
+            let key = key.to_vec();
+            tokio::spawn(async move {
+                let _ = gw.set(&key, &payload, Flags::None).await;
+            })
+        })
+        .collect();
+
+    let _ = join_all(handles).await;
+
+    // Read back the stored value and ensure it matches exactly one of the payloads.
+    let res = gw.get(key).await;
+    match res {
+        Frame::SimpleString(bytes) => {
+            // gateway.get returns a quoted string like "aaaa..."
+            if bytes.len() < 2 {
+                panic!("stored value too small");
+            }
+            let inner = &bytes[1..bytes.len() - 1];
+            // Check equality with any payload
+            let mut matched = false;
+            for p in payloads.iter() {
+                if inner == p.as_slice() {
+                    matched = true;
+                    break;
+                }
+            }
+            assert!(matched, "Final value does not match any writer payload");
+        }
+        other => panic!("unexpected frame returned: {:?}", other),
+    }
 }

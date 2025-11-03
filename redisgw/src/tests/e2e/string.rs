@@ -1,22 +1,11 @@
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use redis_protocol::resp2::{encode::encode, decode::decode, types::{OwnedFrame as Frame, Resp2Frame}};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::{sleep, Duration};
+
 
 #[tokio::test]
 async fn test_e2e_set_get_via_tcp() {
     // Bootstrap test server (FDB + RedisGateway) via helper macro
-    with_e2e_server!(bind_addr, srv_handle);
-
-    // Wait a little for server to start accepting connections
-    let mut connected = false;
-    let mut stream = None;
-    for _ in 0..10 {
-        match tokio::net::TcpStream::connect(&bind_addr).await {
-            Ok(s) => { stream = Some(s); connected = true; break; }
-            Err(_) => sleep(Duration::from_millis(50)).await,
-        }
-    }
-    assert!(connected, "could not connect to server");
+    with_e2e_server!(srv_handle, stream);
     let mut stream = stream.expect("stream");
 
     // Build SET command: ["SET", "e2e_key", "hello"]

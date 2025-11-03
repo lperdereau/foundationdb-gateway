@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum SimpleDataPrefix {
     Data = 11,
     Ttl = 12,
+    Lock = 13,
 }
 
 impl TuplePack for SimpleDataPrefix {
@@ -63,9 +64,13 @@ impl SimpleDataModel {
             }
         }
 
-        fdb.set(&packed_key, value)
-            .await
-            .map_err(|e| format!("FoundationDB set error: {:?}", e))?;
+        // Acquire per-key lock to avoid concurrent large writes
+        Self::acquire_lock(fdb, key, 5000).await?;
+        let set_res = fdb.set(&packed_key, value).await;
+        if let Err(e) = set_res {
+            let _ = Self::release_lock(fdb, key).await; // best-effort
+            return Err(format!("FoundationDB set error: {:?}", e));
+        }
 
         if let Some(ttl_option) = &flags.ttl {
             let ttl = ttl_option
@@ -78,6 +83,9 @@ impl SimpleDataModel {
             }
         }
 
+        // Release lock
+        Self::release_lock(fdb, key).await?;
+
         Ok(old_val)
     }
 
@@ -87,6 +95,78 @@ impl SimpleDataModel {
         fdb.set(&packed_key, &ttl_bytes)
             .await
             .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))
+    }
+
+    /// Acquire a per-key lock to prevent concurrent writers for large objects.
+    /// This function retries with backoff until timeout_ms is reached.
+    pub async fn acquire_lock(
+        fdb: &FoundationDB,
+        key: &[u8],
+        timeout_ms: u64,
+    ) -> Result<(), String> {
+        use tokio::time::{sleep, Instant};
+
+        let start = Instant::now();
+        let mut backoff = 10u64; // ms
+        let lock_key = pack(&(SimpleDataPrefix::Lock, key));
+
+        while start.elapsed().as_millis() as u64 <= timeout_ms {
+            // Try to create the lock in a short transaction: read then set if absent.
+            let lk = lock_key.clone();
+            let db = fdb.clone();
+            let res = db
+                .database
+                .run(move |trx, _| {
+                    let lk = lk.clone();
+                    async move {
+                        let existing = trx.get(&lk, false).await?;
+                        if existing.is_some() {
+                            // someone holds the lock
+                            return Ok(false);
+                        }
+                        // set a simple token (timestamp) to mark the lock
+                        let token = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                            Ok(d) => format!("locked:{}", d.as_millis()),
+                            Err(_) => "locked:0".to_string(),
+                        };
+                        trx.set(&lk, token.as_bytes());
+                        Ok(true)
+                    }
+                })
+                .await;
+
+            match res {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    sleep(std::time::Duration::from_millis(backoff)).await;
+                    backoff = (backoff * 2).min(500);
+                    continue;
+                }
+                Err(e) => return Err(format!("FoundationDB error while acquiring lock: {:?}", e)),
+            }
+        }
+
+        Err("timeout acquiring key lock".to_string())
+    }
+
+    /// Release the per-key lock acquired with `acquire_lock`.
+    pub async fn release_lock(fdb: &FoundationDB, key: &[u8]) -> Result<(), String> {
+        let lock_key = pack(&(SimpleDataPrefix::Lock, key));
+        // Perform a short transaction to clear the lock key to avoid ambiguity with other delete helpers
+        let lk = lock_key.clone();
+        let db = fdb.clone();
+        let res = db
+            .database
+            .run(move |trx, _| {
+                let lk = lk.clone();
+                async move {
+                    trx.clear(&lk);
+                    Ok(())
+                }
+            })
+            .await;
+
+        res.map_err(|e| format!("FoundationDB release_lock error: {:?}", e))
     }
 
     pub async fn get(fdb: &FoundationDB, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
@@ -140,10 +220,23 @@ impl SimpleDataModel {
     }
 
     pub async fn delete(fdb: &FoundationDB, key: &[u8]) -> Result<i64, String> {
+        // Acquire lock before deleting
+        Self::acquire_lock(fdb, key, 5000).await?;
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        fdb.delete(&packed_key)
-            .await
-            .map_err(|e| format!("FoundationDB set error: {:?}", e))
+        let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let r1 = fdb.delete(&packed_key).await;
+        let r2 = fdb.delete(&packed_ttl_key).await;
+        // best-effort release
+        let _ = Self::release_lock(fdb, key).await;
+
+        if let Err(e) = r1 {
+            return Err(format!("FoundationDB delete error: {:?}", e));
+        }
+        if let Err(e) = r2 {
+            return Err(format!("FoundationDB delete ttl error: {:?}", e));
+        }
+
+        Ok(1)
     }
 
     /// Atomically add `delta` to integer value stored at `key`.
@@ -152,6 +245,9 @@ impl SimpleDataModel {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
         let pk = packed_key.clone();
         let db = fdb.clone();
+        // Acquire lock to serialize potentially large transactional writes
+        Self::acquire_lock(fdb, key, 5000).await?;
+        let release_key = key.to_vec();
 
         let res = db
             .database
@@ -209,6 +305,8 @@ impl SimpleDataModel {
                 }
             })
             .await;
+        // Release lock
+        let _ = Self::release_lock(fdb, &release_key).await;
 
         match res {
             Ok((true, v)) => Ok(v),
