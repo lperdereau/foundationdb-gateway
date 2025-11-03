@@ -3,5 +3,10 @@ pub mod datamodel;
 pub mod gateway;
 pub(crate) mod operations;
 pub mod server;
+
+
 #[cfg(test)]
-mod tests;
+mod tests {
+	pub mod string;
+	pub mod ttl;
+}
