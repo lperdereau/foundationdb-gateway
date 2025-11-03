@@ -29,6 +29,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
+      - name: Install system dependencies and FoundationDB client
+        run: |
+          sudo apt update && sudo apt-get install -y clang libclang-dev llvm-dev pkg-config \
+            && wget -O /tmp/fdb-client.deb https://github.com/apple/foundationdb/releases/download/7.3.63/foundationdb-clients_7.3.63-1_amd64.deb \
+            && sudo dpkg -i /tmp/fdb-client.deb
+
       - name: Run cargo tests
         run: |
           rustc --version
