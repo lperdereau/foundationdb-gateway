@@ -244,11 +244,11 @@ async fn test_set_get_with_getflag_returns_old_value() {
     // set with GET should return previous value
     let flags = SetFlags { method: None, ttl: None, get: true };
     let res = gw.set(b"getflag", b"new", Flags::Set(flags)).await;
-    assert_eq!(res, Frame::SimpleString(b"\"old\"".to_vec()));
+    assert_eq!(res, Frame::SimpleString(b"old".to_vec()));
 
     // confirm new value stored
     let res = gw.get(b"getflag").await;
-    assert_eq!(res, Frame::SimpleString(b"\"new\"".to_vec()));
+    assert_eq!(res, Frame::SimpleString(b"new".to_vec()));
 }
 
 // Concurrent large writes to the same key should not produce corrupted values.
