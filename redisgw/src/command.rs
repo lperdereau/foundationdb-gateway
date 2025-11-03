@@ -1,140 +1,107 @@
 use crate::gateway::RedisGateway;
-use crate::operations::{
-    Flags,
-    SetFlags,
-    ConnectionOperations,
-    StringOperations,
-};
 use redis_protocol::resp2::types::OwnedFrame as Frame;
-
-#[derive(Debug, Clone, Copy)]
-pub enum Command {
-    Ping,
-    Set,
-    Get,
-    Del,
-    GetDel,
-    Incr,
-    Decr,
-    IncrBy,
-    DecrBy,
-    // Add more commands as needed
-}
-
-impl Command {
-    pub fn to_command(cmd: &str) -> Option<Self> {
-        match cmd.to_ascii_uppercase().as_str() {
-            "PING" => Some(Command::Ping),
-            "SET" => Some(Command::Set),
-            "GET" => Some(Command::Get),
-            "DEL" => Some(Command::Del),
-            "GETDEL" => Some(Command::GetDel),
-            "INCR" => Some(Command::Incr),
-            "DECR" => Some(Command::Decr),
-            "INCRBY" => Some(Command::Incr),
-            "DECRBY" => Some(Command::Decr),
-            _ => None,
-        }
-    }
-}
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct CommandHandler {
     gateway: RedisGateway,
+    map: Arc<std::collections::HashMap<String, Arc<CmdHandler>>>,
 }
+
+pub type CmdHandler = dyn Fn(RedisGateway, Vec<Vec<u8>>) -> Pin<Box<dyn Future<Output = Frame> + Send>> + Send + Sync + 'static;
+
+pub type CmdMap = HashMap<String, Arc<CmdHandler>>;
+
+/// Boxed future alias to reduce repetition in handler types.
+/// Use the `futures` crate generic boxed future specialized to our `Frame` type.
+pub type BoxFuture = futures::future::BoxFuture<'static, Frame>;
+
+/// Convenience boxed handler type (sized) used when constructing handlers.
+pub type BoxedCmdHandler = Box<dyn Fn(RedisGateway, Vec<Vec<u8>>) -> BoxFuture + Send + Sync + 'static>;
+
+
+/// Macro helper to create a boxed, pinned, Arc-wrapped command handler from an
+/// async block or expression. Use it as:
+///
+/// crate::command_handler!(|gw, args| async move { /* ... */ })
+#[macro_export]
+macro_rules! command_handler {
+    (|$gw:ident, $args:ident| $body:expr) => {{
+        ::std::sync::Arc::from(::std::boxed::Box::new(move |$gw: $crate::gateway::RedisGateway, $args: Vec<Vec<u8>>| {
+            ::std::boxed::Box::pin($body) as $crate::command::BoxFuture
+        }) as $crate::command::BoxedCmdHandler)
+    }};
+}
+
+/// Define a `static` Lazy Arc-wrapped command handler.
+/// Usage: `crate::command_handler_static!(NAME, |gw, args| async move { ... });`
+#[macro_export]
+macro_rules! command_handler_static {
+    ($name:ident, |$gw:ident, $args:ident| $body:expr) => {
+        static $name: ::once_cell::sync::Lazy<::std::sync::Arc<$crate::command::CmdHandler>> =
+            ::once_cell::sync::Lazy::new(|| { $crate::command_handler!(|$gw, $args| $body) });
+    };
+}
+
+fn build_command_map() -> CmdMap {
+    let mut map: CmdMap = HashMap::new();
+
+    // Register connection commands
+    if let Ok(conn_map) = std::panic::catch_unwind(crate::connection::commands::commands) {
+        for (k, h) in conn_map.into_iter() {
+            map.insert(k.to_ascii_uppercase(), h);
+        }
+    }
+
+    // Register string commands
+    if let Ok(str_map) = std::panic::catch_unwind(crate::string::commands::commands) {
+        for (k, h) in str_map.into_iter() {
+            map.insert(k.to_ascii_uppercase(), h);
+        }
+    }
+
+    // Register list commands
+    if let Ok(list_map) = std::panic::catch_unwind(crate::list::commands::commands) {
+        for (k, h) in list_map.into_iter() {
+            map.insert(k.to_ascii_uppercase(), h);
+        }
+    }
+
+    // Register set commands
+    if let Ok(set_map) = std::panic::catch_unwind(crate::set::commands::commands) {
+        for (k, h) in set_map.into_iter() {
+            map.insert(k.to_ascii_uppercase(), h);
+        }
+    }
+
+    map
+}
+
 
 impl CommandHandler {
     pub fn new(gateway: RedisGateway) -> Self {
-        Self { gateway }
+        let map = build_command_map();
+        Self { gateway, map: Arc::new(map) }
     }
 
     pub async fn handle(&self, cmd_str: &str, args: Vec<&[u8]>) -> Frame {
-        match Command::to_command(cmd_str) {
-            Some(Command::Ping) => self.gateway.ping(args).await,
-            Some(Command::Set) => {
-                self.gateway
-                    .set(
-                        args[0],
-                        args[1],
-                        parse_extra_args(Command::Set, args.get(2..).unwrap_or(&[])),
-                    )
-                    .await
-            }
-            Some(Command::Get) => self.gateway.get(args[0]).await,
-            Some(Command::Del) => self.gateway.del(args[0]).await,
-            Some(Command::GetDel) => self.gateway.getdel(args[0]).await,
-            Some(Command::Incr) => self.gateway.incr(args[0]).await,
-            Some(Command::Decr) => self.gateway.decr(args[0]).await,
-            Some(Command::IncrBy) => self.gateway.incr_by(args[0], args[1]).await,
-            Some(Command::DecrBy) => self.gateway.decr_by(args[0], args[1]).await,
-            None => {
-                let args_str: String = args
-                    .iter()
-                    .filter_map(|s| std::str::from_utf8(s).ok())
-                    .collect::<Vec<&str>>()
-                    .join(" ");
-                Frame::Error(format!(
-                    "ERR unknown command '{}', with args beginning with: '{}'",
-                    cmd_str, args_str
-                ))
-            }
+        let key = cmd_str.to_ascii_uppercase();
+        if let Some(h) = self.map.get(&key) {
+            let owned_args = args.iter().map(|s| s.to_vec()).collect::<Vec<_>>();
+            (h)(self.gateway.clone(), owned_args).await
+        } else {
+            let args_str: String = args
+                .iter()
+                .filter_map(|s| std::str::from_utf8(s).ok())
+                .collect::<Vec<&str>>()
+                .join(" ");
+            Frame::Error(format!(
+                "ERR unknown command '{}', with args beginning with: '{}'",
+                cmd_str, args_str
+            ))
         }
     }
-}
-
-fn parse_extra_args(cmd: Command, extra_args: &[&[u8]]) -> Flags {
-    if extra_args.is_empty() {
-        return Flags::None;
-    }
-
-    match cmd {
-        Command::Set => Flags::Set(parse_set_extra_args(extra_args)),
-        _ => Flags::None,
-    }
-}
-
-fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
-    // Assume SetFlags, SetMethod, SetTTL are defined in crate::operations
-    use crate::operations::{SetFlags, SetMethod, SetTTL};
-
-    let mut method: Option<SetMethod> = None;
-    let mut ttl: Option<SetTTL> = None;
-    let mut get: bool = false;
-
-    let mut args = extra_args.iter().peekable();
-    while let Some(arg) = args.next() {
-        let s = match std::str::from_utf8(arg) {
-            Ok(s) => s.to_ascii_uppercase(),
-            Err(_) => continue, // skip invalid utf-8
-        };
-        match s.as_str() {
-            "NX" => method = Some(SetMethod::NX),
-            "XX" => method = Some(SetMethod::XX),
-            "GET" => get = true,
-            "EX" | "PX" | "EXAT" | "PXAT" => {
-                let next = match args.next() {
-                    Some(n) => n,
-                    None => continue, // skip if missing argument
-                };
-                let n = match std::str::from_utf8(next)
-                    .ok()
-                    .and_then(|x| x.parse::<u64>().ok())
-                {
-                    Some(val) => val,
-                    None => continue, // skip if invalid value
-                };
-                ttl = Some(match s.as_str() {
-                    "EX" => SetTTL::Ex(n),
-                    "PX" => SetTTL::Px(n),
-                    "EXAT" => SetTTL::ExAt(n),
-                    "PXAT" => SetTTL::PxAt(n),
-                    _ => unreachable!(),
-                });
-            }
-            "KEEPTTL" => ttl = Some(SetTTL::KeepTTL),
-            _ => {} // ignore unknown options
-        }
-    }
-
-    SetFlags { method, ttl, get }
 }

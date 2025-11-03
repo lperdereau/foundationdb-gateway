@@ -1,19 +1,9 @@
-use crate::datamodel::SimpleDataModel;
-use crate::operations::{
-    Flags,
-    SetFlags,
-    ConnectionOperations,
-    StringOperations,
-    ListOperations,
-    SetOperations,
-};
 use fdb::FoundationDB;
-// transactional logic moved to SimpleDataModel
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 #[derive(Clone)]
 pub struct RedisGateway {
-    fdb: FoundationDB,
+    pub(crate) fdb: FoundationDB,
 }
 
 impl RedisGateway {
@@ -22,127 +12,52 @@ impl RedisGateway {
     }
 }
 
-impl ConnectionOperations for RedisGateway {
-    async fn ping(&self, message: Vec<&[u8]>) -> Frame {
-        let msg = if let Some(arg) = message.first() {
-            std::str::from_utf8(arg).ok()
-        } else {
-            None
-        };
+#[allow(dead_code)]
+pub trait ListOperations {
+    /// Inserts all the specified values at the head of the list stored at key.
+    fn lpush(&self, key: &[u8], values: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 
-        match msg {
-            Some(res) => Frame::SimpleString(res.into()),
-            None => Frame::SimpleString(b"PONG".to_vec()),
-        }
-    }
+    /// Inserts all the specified values at the tail of the list stored at key.
+    fn rpush(&self, key: &[u8], values: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
+
+    /// Removes and returns the first element of the list stored at key.
+    fn lpop(&self, key: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
+
+    /// Removes and returns the last element of the list stored at key.
+    fn rpop(&self, key: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
+
+    /// Returns the specified elements of the list stored at key.
+    fn lrange(&self, key: &[u8], start: isize, stop: isize) -> impl std::future::Future<Output = Frame> + Send;
+
+    /// Returns the element at index in the list stored at key.
+    fn lindex(&self, key: &[u8], index: isize) -> impl std::future::Future<Output = Frame> + Send;
+
+    /// Returns the length of the list stored at key.
+    fn llen(&self, key: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
 }
 
-impl StringOperations for RedisGateway {
-    async fn set(&self, key: &[u8], value: &[u8], extra_args: Flags) -> Frame {
-        let args = match extra_args {
-            Flags::Set(set_flags) => set_flags,
-            Flags::None => SetFlags::default(),
-        };
-        match SimpleDataModel::set(&self.fdb, key, value, args).await {
-            Ok(Some(val)) => Frame::BulkString(val),
-            Ok(None) => Frame::SimpleString("OK".to_string().into_bytes()),
-            Err(e) => Frame::Error(e.to_string()),
-        }
-    }
+#[allow(dead_code)]
+pub trait SetOperations {
+    /// Adds the specified members to the set stored at key.
+    fn sadd(&self, key: &[u8], members: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn get(&self, key: &[u8]) -> Frame {
-        match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(Some(val)) => Frame::BulkString(val),
-            Ok(None) => Frame::Null,
-            Err(e) => Frame::Error(e.to_string()),
-        }
-    }
+    /// Removes the specified members from the set stored at key.
+    fn srem(&self, key: &[u8], members: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn del(&self, key: &[u8]) -> Frame {
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string()),
-        };
-        if val.is_none() {
-            return Frame::Integer(0i64);
-        }
-        match SimpleDataModel::delete(&self.fdb, key).await {
-            Ok(val) => Frame::Integer(val),
-            Err(e) => Frame::Error(e.to_string()),
-        }
-    }
+    /// Returns all the members of the set value stored at key.
+    fn smembers(&self, key: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn getdel(&self, key: &[u8]) -> Frame {
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string()),
-        };
-        if let Err(e) = SimpleDataModel::delete(&self.fdb, key).await { return Frame::Error(e.to_string()) }
-        match val {
-            Some(val) => Frame::BulkString(val),
-            None => Frame::Null,
-        }
-    }
+    /// Returns if member is a member of the set stored at key.
+    fn sismember(&self, key: &[u8], member: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn incr(&self, key: &[u8]) -> Frame {
-        match SimpleDataModel::atomic_add(&self.fdb, key, 1).await {
-            Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e),
-        }
-    }
+    /// Returns the members of the set resulting from the union of all the given sets.
+    fn sunion(&self, keys: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn decr(&self, key: &[u8]) -> Frame {
-        match SimpleDataModel::atomic_add(&self.fdb, key, -1).await {
-            Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e),
-        }
-    }
+    /// Returns the members of the set resulting from the intersection of all the given sets.
+    fn sinter(&self, keys: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 
-    async fn incr_by(&self, key: &[u8], increment: &[u8]) -> Frame {
-        let int = match std::str::from_utf8(increment)
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-        {
-            None => return Frame::Error("ERR value is not an integer or out of range".into()),
-            Some(i) => i,
-        };
-        match SimpleDataModel::atomic_add(&self.fdb, key, int).await {
-            Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e),
-        }
-    }
-
-    async fn decr_by(&self, key: &[u8], decrement: &[u8]) -> Frame {
-        let int = match std::str::from_utf8(decrement)
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-        {
-            None => return Frame::Error("ERR value is not an integer or out of range".into()),
-            Some(i) => i,
-        };
-        match SimpleDataModel::atomic_add(&self.fdb, key, -int).await {
-            Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e),
-        }
-    }
-
-    async fn append(&self, key: &[u8], value: &[u8]) -> Frame {
-        let current = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string()),
-        };
-        let mut new_value = Vec::new();
-        if let Some(existing) = current {
-            new_value.extend_from_slice(&existing);
-        }
-        new_value.extend_from_slice(value);
-        let len = new_value.len();
-        if let Err(e) = SimpleDataModel::set(&self.fdb, key, &new_value, SetFlags::default()).await
-        {
-            return Frame::Error(e.to_string());
-        }
-        Frame::Integer(len as i64)
-    }
+    /// Returns the members of the set resulting from the difference between the first set and all the successive sets.
+    fn sdiff(&self, keys: &[&[u8]]) -> impl std::future::Future<Output = Frame> + Send;
 }
 
 impl ListOperations for RedisGateway {

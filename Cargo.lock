@@ -1543,6 +1543,7 @@ dependencies = [
  "futures",
  "futures-util",
  "log",
+ "once_cell",
  "redis-protocol",
  "tokio",
 ]

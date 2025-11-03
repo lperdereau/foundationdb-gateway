@@ -5,7 +5,7 @@ use redis_protocol::resp2::{encode::encode, decode::decode, types::{OwnedFrame a
 #[tokio::test]
 async fn test_e2e_set_get_via_tcp() {
     // Bootstrap test server (FDB + RedisGateway) via helper macro
-    with_e2e_server!(srv_handle, stream);
+    crate::with_e2e_server!(srv_handle, stream);
     let mut stream = stream.expect("stream");
 
     // Build SET command: ["SET", "e2e_key", "hello"]
