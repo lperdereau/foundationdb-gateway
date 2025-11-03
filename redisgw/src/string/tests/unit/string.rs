@@ -1,5 +1,5 @@
 use crate::gateway::RedisGateway;
-use crate::operations::{Flags, SetFlags, StringOperations, SetTTL};
+use crate::string::operations::{StringOperations, SetFlags, SetTTL, SetMethod};
 use fdb::FoundationDB;
 use fdb_testcontainer::get_db_once;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
@@ -12,14 +12,14 @@ async fn test_insert_record() {
     let db = FoundationDB::new(_guard.clone());
     let gw = RedisGateway::new(db);
 
-    let _ = gw.set(b"key", b"value", Flags::None).await;
+    let _ = gw.set(b"key", b"value", SetFlags::default()).await;
     let result = gw.get(b"key").await;
     assert_eq!(result, Frame::BulkString(b"value".to_vec()));
     let _ = gw.del(b"key").await;
     let result = gw.get(b"key").await;
     assert_eq!(result, Frame::Null);
 
-    let _ = gw.set(b"key", b"value", Flags::None).await;
+    let _ = gw.set(b"key", b"value", SetFlags::default()).await;
     let result = gw.getdel(b"key").await;
     assert_eq!(result, Frame::BulkString(b"value".to_vec()));
     let result = gw.getdel(b"key").await;
@@ -32,7 +32,7 @@ async fn test_increment_decrement_record() {
     let db = FoundationDB::new(_guard.clone());
     let gateway = RedisGateway::new(db);
     let key = b"counter";
-    gateway.set(key, b"0", Flags::None).await;
+    gateway.set(key, b"0", SetFlags::default()).await;
     let val = gateway.incr(key).await;
     assert_eq!(val, Frame::Integer(1));
     let val = gateway.incr(key).await;
@@ -44,11 +44,11 @@ async fn test_increment_decrement_record() {
     let val = gateway.decr(key).await;
     assert_eq!(val, Frame::Integer(-1));
 
-    gateway.set(key, b"10", Flags::None).await;
+    gateway.set(key, b"10", SetFlags::default()).await;
     let val = gateway.incr(key).await;
     assert_eq!(val, Frame::Integer(11));
 
-    gateway.set(key, b"100", Flags::None).await;
+    gateway.set(key, b"100", SetFlags::default()).await;
     let val = gateway.incr(key).await;
     assert_eq!(val, Frame::Integer(101));
     let _ = gateway.decr(key).await;
@@ -64,7 +64,7 @@ async fn test_increment_decrement_by_record() {
     let db = FoundationDB::new(_guard.clone());
     let gateway = RedisGateway::new(db);
     let key = b"counter";
-    gateway.set(key, b"0", Flags::None).await;
+    gateway.set(key, b"0", SetFlags::default()).await;
     let val = gateway.incr_by(key, b"10").await;
     assert_eq!(val, Frame::Integer(10));
     let val = gateway.incr_by(key, b"100").await;
@@ -83,8 +83,8 @@ async fn test_set_overwrite() {
     let db = fdb::FoundationDB::new(_guard.clone());
     let gw = crate::gateway::RedisGateway::new(db);
 
-    let _ = gw.set(b"ow", b"v1", crate::operations::Flags::None).await;
-    let _ = gw.set(b"ow", b"v2", crate::operations::Flags::None).await;
+    let _ = gw.set(b"ow", b"v1", SetFlags::default()).await;
+    let _ = gw.set(b"ow", b"v2", SetFlags::default()).await;
     let res = gw.get(b"ow").await;
     assert_eq!(res, Frame::BulkString(b"v2".to_vec()));
     let _ = gw.del(b"ow").await;
@@ -92,16 +92,15 @@ async fn test_set_overwrite() {
 
 #[tokio::test]
 async fn test_set_nx_xx() {
-    use crate::operations::{SetFlags, SetMethod};
     let _guard = fdb_testcontainer::get_db_once().await;
     let db = fdb::FoundationDB::new(_guard.clone());
     let gw = crate::gateway::RedisGateway::new(db);
 
     // NX: only set when not exists
     let flags = SetFlags { method: Some(SetMethod::NX), ttl: None, get: false };
-    let _ = gw.set(b"nxkey", b"v1", crate::operations::Flags::Set(flags.clone())).await;
+    let _ = gw.set(b"nxkey", b"v1", flags.clone()).await;
     // second NX should not overwrite
-    let _ = gw.set(b"nxkey", b"v2", crate::operations::Flags::Set(flags)).await;
+    let _ = gw.set(b"nxkey", b"v2", flags).await;
     let res = gw.get(b"nxkey").await;
     assert_eq!(res, Frame::BulkString(b"v1".to_vec()));
 
@@ -110,13 +109,13 @@ async fn test_set_nx_xx() {
     // XX: only set when exists
     let flags_xx = SetFlags { method: Some(SetMethod::XX), ttl: None, get: false };
     // should not set because key absent
-    let _ = gw.set(b"xxkey", b"v1", crate::operations::Flags::Set(flags_xx.clone())).await;
+    let _ = gw.set(b"xxkey", b"v1", flags_xx.clone()).await;
     let res = gw.get(b"xxkey").await;
     assert_eq!(res, Frame::Null);
 
     // create then XX should succeed
-    let _ = gw.set(b"xxkey", b"v0", crate::operations::Flags::None).await;
-    let _ = gw.set(b"xxkey", b"v1", crate::operations::Flags::Set(flags_xx)).await;
+    let _ = gw.set(b"xxkey", b"v0", SetFlags::default()).await;
+    let _ = gw.set(b"xxkey", b"v1", flags_xx).await;
     let res = gw.get(b"xxkey").await;
     assert_eq!(res, Frame::BulkString(b"v1".to_vec()));
     let _ = gw.del(b"xxkey").await;
@@ -128,9 +127,9 @@ async fn test_del_multiple() {
     let db = fdb::FoundationDB::new(_guard.clone());
     let gw = crate::gateway::RedisGateway::new(db);
 
-    let _ = gw.set(b"d1", b"a", crate::operations::Flags::None).await;
-    let _ = gw.set(b"d2", b"b", crate::operations::Flags::None).await;
-    let _ = gw.set(b"d3", b"c", crate::operations::Flags::None).await;
+    let _ = gw.set(b"d1", b"a", SetFlags::default()).await;
+    let _ = gw.set(b"d2", b"b", SetFlags::default()).await;
+    let _ = gw.set(b"d3", b"c", SetFlags::default()).await;
 
     // del returns integer frame with number of deleted keys
     let res = gw.del(b"d1").await;
@@ -147,7 +146,7 @@ async fn test_concurrent_incr() {
     let db = fdb::FoundationDB::new(_guard.clone());
     let gw = crate::gateway::RedisGateway::new(db.clone());
     let key = b"conc_counter";
-    let _ = gw.set(key, b"0", crate::operations::Flags::None).await;
+    let _ = gw.set(key, b"0", SetFlags::default()).await;
 
     let tasks: Vec<_> = (0..20)
         .map(|_| {
@@ -176,7 +175,7 @@ async fn test_set_with_ttl_ex_px() {
     let gw = RedisGateway::new(db);
 
     let flags = SetFlags { method: None, ttl: Some(SetTTL::Px(100)), get: false };
-    let _ = gw.set(b"ttl_key", b"vttl", Flags::Set(flags)).await;
+    let _ = gw.set(b"ttl_key", b"vttl", flags).await;
     // immediately available
     let res = gw.get(b"ttl_key").await;
     assert_eq!(res, Frame::BulkString(b"vttl".to_vec()));
@@ -195,11 +194,11 @@ async fn test_keep_ttl_preserved_on_set() {
 
     // set initial key with 300ms TTL
     let flags_init = SetFlags { method: None, ttl: Some(SetTTL::Px(300)), get: false };
-    let _ = gw.set(b"keep_ttl", b"v1", Flags::Set(flags_init)).await;
+    let _ = gw.set(b"keep_ttl", b"v1", flags_init).await;
 
     // replace value but keep TTL
     let flags_keep = SetFlags { method: None, ttl: Some(SetTTL::KeepTTL), get: false };
-    let _ = gw.set(b"keep_ttl", b"v2", Flags::Set(flags_keep)).await;
+    let _ = gw.set(b"keep_ttl", b"v2", flags_keep).await;
 
     // after short wait (<300ms) key still exists
     sleep(Duration::from_millis(150)).await;
@@ -239,11 +238,11 @@ async fn test_set_get_with_getflag_returns_old_value() {
     let gw = RedisGateway::new(db);
 
     // initial set
-    let _ = gw.set(b"getflag", b"old", Flags::None).await;
+    let _ = gw.set(b"getflag", b"old", SetFlags::default()).await;
 
     // set with GET should return previous value
     let flags = SetFlags { method: None, ttl: None, get: true };
-    let res = gw.set(b"getflag", b"new", Flags::Set(flags)).await;
+    let res = gw.set(b"getflag", b"new", flags).await;
     assert_eq!(res, Frame::BulkString(b"old".to_vec()));
 
     // confirm new value stored
@@ -277,7 +276,7 @@ async fn test_concurrent_large_writes() {
             let payload = payloads[i].clone();
             let key = key.to_vec();
             tokio::spawn(async move {
-                let _ = gw.set(&key, &payload, Flags::None).await;
+                let _ = gw.set(&key, &payload, SetFlags::default()).await;
             })
         })
         .collect();

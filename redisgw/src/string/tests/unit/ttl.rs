@@ -1,5 +1,5 @@
 use crate::gateway::RedisGateway;
-use crate::operations::{Flags, SetFlags, SetTTL, StringOperations};
+use crate::string::operations::{StringOperations, SetFlags, SetTTL};
 use std::time::Duration;
 use fdb::FoundationDB;
 use fdb_testcontainer::get_db_once;
@@ -17,7 +17,7 @@ async fn test_set_with_ttl() {
         get: false,
     };
 
-    let _ = gw.set(b"ttlkey", b"value", Flags::Set(flags)).await;
+    let _ = gw.set(b"ttlkey", b"value", flags).await;
     let result = gw.get(b"ttlkey").await;
     assert_eq!(result, Frame::BulkString(b"value".to_vec()));
 

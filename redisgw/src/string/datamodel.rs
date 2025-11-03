@@ -1,4 +1,4 @@
-use crate::operations::{SetFlags, SetMethod, SetTTL};
+use crate::string::operations::{SetFlags, SetMethod, SetTTL};
 use fdb::FoundationDB;
 use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset, pack};
 use foundationdb::RangeOption;
@@ -25,11 +25,17 @@ impl TuplePack for SimpleDataPrefix {
     }
 }
 
-pub struct SimpleDataModel {}
+pub struct StringDataModel {
+    pub fdb: FoundationDB,
+}
 
-impl SimpleDataModel {
+impl StringDataModel {
+    pub fn new(fdb: FoundationDB) -> Self {
+        Self { fdb }
+    }
+
     pub async fn set(
-        fdb: &FoundationDB,
+        &self,
         key: &[u8],
         value: &[u8],
         flags: SetFlags,
@@ -38,7 +44,7 @@ impl SimpleDataModel {
         let mut old_val = None;
 
         let existing = if flags.get || flags.method.is_some() {
-            SimpleDataModel::get(fdb, key)
+            self.get(key)
                 .await
                 .map_err(|e| format!("FoundationDB set error: {:?}", e))?
         } else {
@@ -65,10 +71,10 @@ impl SimpleDataModel {
         }
 
         // Acquire per-key lock to avoid concurrent large writes
-        Self::acquire_lock(fdb, key, 5000).await?;
-        let set_res = fdb.set(&packed_key, value).await;
+        self.acquire_lock(key, 5000).await?;
+        let set_res = self.fdb.set(&packed_key, value).await;
         if let Err(e) = set_res {
-            let _ = Self::release_lock(fdb, key).await; // best-effort
+            let _ = self.release_lock(key).await; // best-effort
             return Err(format!("FoundationDB set error: {:?}", e));
         }
 
@@ -77,33 +83,30 @@ impl SimpleDataModel {
                 .unix_epoch_in_ms()
                 .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
             if *ttl_option != SetTTL::KeepTTL {
-                SimpleDataModel::set_ttl(fdb, key, ttl)
+                self.set_ttl(key, ttl)
                     .await
                     .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
             }
         }
 
         // Release lock
-        Self::release_lock(fdb, key).await?;
+        self.release_lock(key).await?;
 
         Ok(old_val)
     }
 
-    pub async fn set_ttl(fdb: &FoundationDB, key: &[u8], ttl: u128) -> Result<(), String> {
+    pub async fn set_ttl(&self, key: &[u8], ttl: u128) -> Result<(), String> {
         let packed_key = pack(&(SimpleDataPrefix::Ttl, key));
         let ttl_bytes = ttl.to_be_bytes();
-        fdb.set(&packed_key, &ttl_bytes)
+        self.fdb
+            .set(&packed_key, &ttl_bytes)
             .await
             .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))
     }
 
     /// Acquire a per-key lock to prevent concurrent writers for large objects.
     /// This function retries with backoff until timeout_ms is reached.
-    pub async fn acquire_lock(
-        fdb: &FoundationDB,
-        key: &[u8],
-        timeout_ms: u64,
-    ) -> Result<(), String> {
+    pub async fn acquire_lock(&self, key: &[u8], timeout_ms: u64) -> Result<(), String> {
         use tokio::time::{sleep, Instant};
 
         let start = Instant::now();
@@ -113,7 +116,7 @@ impl SimpleDataModel {
         while start.elapsed().as_millis() as u64 <= timeout_ms {
             // Try to create the lock in a short transaction: read then set if absent.
             let lk = lock_key.clone();
-            let db = fdb.clone();
+            let db = self.fdb.clone();
             let res = db
                 .database
                 .run(move |trx, _| {
@@ -150,11 +153,11 @@ impl SimpleDataModel {
     }
 
     /// Release the per-key lock acquired with `acquire_lock`.
-    pub async fn release_lock(fdb: &FoundationDB, key: &[u8]) -> Result<(), String> {
+    pub async fn release_lock(&self, key: &[u8]) -> Result<(), String> {
         let lock_key = pack(&(SimpleDataPrefix::Lock, key));
         // Perform a short transaction to clear the lock key to avoid ambiguity with other delete helpers
         let lk = lock_key.clone();
-        let db = fdb.clone();
+        let db = self.fdb.clone();
         let res = db
             .database
             .run(move |trx, _| {
@@ -169,10 +172,11 @@ impl SimpleDataModel {
         res.map_err(|e| format!("FoundationDB release_lock error: {:?}", e))
     }
 
-    pub async fn get(fdb: &FoundationDB, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
         // Read value and TTL (if any). If TTL exists and is expired, delete both and return None.
-        let value = fdb
+        let value = self
+            .fdb
             .get(&packed_key)
             .await
             .map_err(|e| format!("FoundationDB get error: {:?}", e))?;
@@ -184,7 +188,8 @@ impl SimpleDataModel {
 
         // Check TTL
         let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
-        let ttl_bytes_opt = fdb
+        let ttl_bytes_opt = self
+            .fdb
             .get(&packed_ttl_key)
             .await
             .map_err(|e| format!("FoundationDB get ttl error: {:?}", e))?;
@@ -203,11 +208,13 @@ impl SimpleDataModel {
 
                 if ttl != 0 && ttl <= now {
                     // expired -> delete both keys
-                    let _ = fdb
+                    let _ = self
+                        .fdb
                         .delete(&packed_key)
                         .await
                         .map_err(|e| format!("FoundationDB delete expired error: {:?}", e))?;
-                    let _ = fdb
+                    let _ = self
+                        .fdb
                         .delete(&packed_ttl_key)
                         .await
                         .map_err(|e| format!("FoundationDB delete expired ttl error: {:?}", e))?;
@@ -219,15 +226,15 @@ impl SimpleDataModel {
         Ok(value)
     }
 
-    pub async fn delete(fdb: &FoundationDB, key: &[u8]) -> Result<i64, String> {
+    pub async fn delete(&self, key: &[u8]) -> Result<i64, String> {
         // Acquire lock before deleting
-        Self::acquire_lock(fdb, key, 5000).await?;
+        self.acquire_lock(key, 5000).await?;
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
         let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
-        let r1 = fdb.delete(&packed_key).await;
-        let r2 = fdb.delete(&packed_ttl_key).await;
+        let r1 = self.fdb.delete(&packed_key).await;
+        let r2 = self.fdb.delete(&packed_ttl_key).await;
         // best-effort release
-        let _ = Self::release_lock(fdb, key).await;
+        let _ = self.release_lock(key).await;
 
         if let Err(e) = r1 {
             return Err(format!("FoundationDB delete error: {:?}", e));
@@ -241,12 +248,12 @@ impl SimpleDataModel {
 
     /// Atomically add `delta` to integer value stored at `key`.
     /// Returns new value on success, or Err(String) on parse/FDB error.
-    pub async fn atomic_add(fdb: &FoundationDB, key: &[u8], delta: i64) -> Result<i64, String> {
+    pub async fn atomic_add(&self, key: &[u8], delta: i64) -> Result<i64, String> {
         let packed_key = pack(&(SimpleDataPrefix::Data, key));
         let pk = packed_key.clone();
-        let db = fdb.clone();
+        let db = self.fdb.clone();
         // Acquire lock to serialize potentially large transactional writes
-        Self::acquire_lock(fdb, key, 5000).await?;
+        self.acquire_lock(key, 5000).await?;
         let release_key = key.to_vec();
 
         let res = db
@@ -306,7 +313,7 @@ impl SimpleDataModel {
             })
             .await;
         // Release lock
-        let _ = Self::release_lock(fdb, &release_key).await;
+        let _ = self.release_lock(&release_key).await;
 
         match res {
             Ok((true, v)) => Ok(v),

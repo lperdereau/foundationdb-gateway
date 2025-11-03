@@ -4,6 +4,16 @@ use crate::gateway::RedisGateway;
 use crate::server::Server;
 use tokio::time::{sleep, Duration};
 
+#[cfg(test)]
+macro_rules! with_e2e_server {
+    ($handle:ident, $stream:ident) => {
+        let ($handle, $stream) = crate::tests::e2e::util::spawn_test_server().await;
+    };
+}
+
+#[cfg(test)]
+pub(crate) use with_e2e_server;
+
 /// Start a test FDB instance and spawn a RedisGateway Server bound to an ephemeral port.
 /// Returns (server_handle, stream). The testcontainer guard is captured by the
 /// spawned server task to keep the DB alive while the server runs.
