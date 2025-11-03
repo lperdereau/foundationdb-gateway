@@ -27,15 +27,15 @@ impl SetFlags {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetTTL {
     /// Set expiry in seconds.
-    EX(u64),
+    Ex(u64),
     /// Set expiry in milliseconds.
-    PX(u64),
+    Px(u64),
     /// Set expiry at a specific unix time in seconds.
-    EXAT(u64),
+    ExAt(u64),
     /// Set expiry at a specific unix time in milliseconds.
-    PXAT(u64),
+    PxAt(u64),
     /// Keep the existing TTL.
-    KEPPTTL,
+    KeepTTL,
 }
 
 impl SetTTL {
@@ -46,11 +46,11 @@ impl SetTTL {
         };
 
         match self {
-            SetTTL::EX(secs) => Ok((now + Duration::from_secs(secs.clone())).as_millis()),
-            SetTTL::PX(ms) => Ok((now + Duration::from_millis(ms.clone())).as_millis()),
-            SetTTL::EXAT(timestamp) => Ok(Duration::from_secs(timestamp.clone()).as_millis()),
-            SetTTL::PXAT(timestamp) => Ok(Duration::from_millis(timestamp.clone()).as_millis()),
-            SetTTL::KEPPTTL => Ok(0),
+            SetTTL::Ex(secs) => Ok((now + Duration::from_secs(*secs)).as_millis()),
+            SetTTL::Px(ms) => Ok((now + Duration::from_millis(*ms)).as_millis()),
+            SetTTL::ExAt(timestamp) => Ok(Duration::from_secs(*timestamp).as_millis()),
+            SetTTL::PxAt(timestamp) => Ok(Duration::from_millis(*timestamp).as_millis()),
+            SetTTL::KeepTTL => Ok(0),
         }
     }
 }

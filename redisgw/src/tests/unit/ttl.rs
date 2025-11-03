@@ -13,7 +13,7 @@ async fn test_set_with_ttl() {
 
     let flags = SetFlags {
         method: None,
-        ttl: Some(SetTTL::EX(1)),
+        ttl: Some(SetTTL::Ex(1)),
         get: false,
     };
 

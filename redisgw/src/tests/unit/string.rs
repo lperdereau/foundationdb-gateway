@@ -175,7 +175,7 @@ async fn test_set_with_ttl_ex_px() {
     let db = FoundationDB::new(_guard.clone());
     let gw = RedisGateway::new(db);
 
-    let flags = SetFlags { method: None, ttl: Some(SetTTL::PX(100)), get: false };
+    let flags = SetFlags { method: None, ttl: Some(SetTTL::Px(100)), get: false };
     let _ = gw.set(b"ttl_key", b"vttl", Flags::Set(flags)).await;
     // immediately available
     let res = gw.get(b"ttl_key").await;
@@ -194,11 +194,11 @@ async fn test_keep_ttl_preserved_on_set() {
     let gw = RedisGateway::new(db);
 
     // set initial key with 300ms TTL
-    let flags_init = SetFlags { method: None, ttl: Some(SetTTL::PX(300)), get: false };
+    let flags_init = SetFlags { method: None, ttl: Some(SetTTL::Px(300)), get: false };
     let _ = gw.set(b"keep_ttl", b"v1", Flags::Set(flags_init)).await;
 
     // replace value but keep TTL
-    let flags_keep = SetFlags { method: None, ttl: Some(SetTTL::KEPPTTL), get: false };
+    let flags_keep = SetFlags { method: None, ttl: Some(SetTTL::KeepTTL), get: false };
     let _ = gw.set(b"keep_ttl", b"v2", Flags::Set(flags_keep)).await;
 
     // after short wait (<300ms) key still exists
@@ -266,7 +266,7 @@ async fn test_concurrent_large_writes() {
     // Prepare distinct ASCII payloads (valid UTF-8) of ~120KB each.
     let mut payloads: Vec<Vec<u8>> = Vec::new();
     for i in 0..8 {
-        let ch = (b'a' + (i as u8 % 26)) as u8;
+        let ch = b'a' + (i as u8 % 26);
         payloads.push(vec![ch; 120_000]);
     }
 

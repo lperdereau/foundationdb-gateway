@@ -76,7 +76,7 @@ impl SimpleDataModel {
             let ttl = ttl_option
                 .unix_epoch_in_ms()
                 .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
-            if *ttl_option != SetTTL::KEPPTTL {
+            if *ttl_option != SetTTL::KeepTTL {
                 SimpleDataModel::set_ttl(fdb, key, ttl)
                     .await
                     .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))?;
@@ -197,7 +197,7 @@ impl SimpleDataModel {
                 let ttl = u128::from_be_bytes(arr);
 
                 let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                    Ok(d) => d.as_millis() as u128,
+                    Ok(d) => d.as_millis(),
                     Err(_) => 0u128,
                 };
 

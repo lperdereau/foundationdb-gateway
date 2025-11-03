@@ -22,7 +22,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn from_str(cmd: &str) -> Option<Self> {
+    pub fn to_command(cmd: &str) -> Option<Self> {
         match cmd.to_ascii_uppercase().as_str() {
             "PING" => Some(Command::Ping),
             "SET" => Some(Command::Set),
@@ -49,7 +49,7 @@ impl CommandHandler {
     }
 
     pub async fn handle(&self, cmd_str: &str, args: Vec<&[u8]>) -> Frame {
-        match Command::from_str(cmd_str) {
+        match Command::to_command(cmd_str) {
             Some(Command::Ping) => self.gateway.ping(args).await,
             Some(Command::Set) => {
                 self.gateway
@@ -83,7 +83,7 @@ impl CommandHandler {
 }
 
 fn parse_extra_args(cmd: Command, extra_args: &[&[u8]]) -> Flags {
-    if extra_args.len() < 1 {
+    if extra_args.is_empty() {
         return Flags::None;
     }
 
@@ -124,14 +124,14 @@ fn parse_set_extra_args(extra_args: &[&[u8]]) -> SetFlags {
                     None => continue, // skip if invalid value
                 };
                 ttl = Some(match s.as_str() {
-                    "EX" => SetTTL::EX(n),
-                    "PX" => SetTTL::PX(n),
-                    "EXAT" => SetTTL::EXAT(n),
-                    "PXAT" => SetTTL::PXAT(n),
+                    "EX" => SetTTL::Ex(n),
+                    "PX" => SetTTL::Px(n),
+                    "EXAT" => SetTTL::ExAt(n),
+                    "PXAT" => SetTTL::PxAt(n),
                     _ => unreachable!(),
                 });
             }
-            "KEPPTTL" => ttl = Some(SetTTL::KEPPTTL),
+            "KEEPTTL" => ttl = Some(SetTTL::KeepTTL),
             _ => {} // ignore unknown options
         }
     }

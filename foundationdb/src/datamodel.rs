@@ -134,6 +134,7 @@ impl DataModel {
     }
 
     // Function to retrieve and combine chunks from FoundationDB
+    #[cfg(test)]
     pub async fn retrieve_chunks_from_fdb(
         fdb: &FoundationDB,
         key: &[u8],

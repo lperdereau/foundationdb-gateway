@@ -8,8 +8,6 @@ use std::sync::Arc;
 pub(crate) mod datamodel;
 use datamodel::DataModel;
 
-const MAX_SCAN_SIZE: usize = 20;
-
 #[derive(Clone)]
 pub struct FoundationDB {
     pub database: Arc<foundationdb::Database>,
@@ -21,11 +19,11 @@ impl FoundationDB {
     }
 
     pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), FdbBindingError> {
-        let chunks = DataModel::split_into_chunks(&value, None);
-        if let Some(_) = self.get(key).await? {
+        let chunks = DataModel::split_into_chunks(value, None);
+        if (self.get(key).await?).is_some() {
             self.delete(key).await?;
         }
-        DataModel::store_chunks_in_fdb(&self, key, chunks).await?;
+        DataModel::store_chunks_in_fdb(self, key, chunks).await?;
         Ok(())
     }
 
@@ -107,6 +105,8 @@ mod tests {
     use super::*;
     use fdb_testcontainer::get_db_once;
     use foundationdb_tuple::pack;
+
+    const MAX_SCAN_SIZE: usize = 20;
 
     #[tokio::test]
     async fn test_insert_record() {

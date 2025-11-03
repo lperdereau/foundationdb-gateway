@@ -18,13 +18,13 @@ pub struct RedisGateway {
 
 impl RedisGateway {
     pub fn new(fdb: FoundationDB) -> Self {
-        Self { fdb: fdb }
+        Self { fdb }
     }
 }
 
 impl ConnectionOperations for RedisGateway {
     async fn ping(&self, message: Vec<&[u8]>) -> Frame {
-        let msg = if let Some(arg) = message.get(0) {
+        let msg = if let Some(arg) = message.first() {
             std::str::from_utf8(arg).ok()
         } else {
             None
@@ -54,33 +54,30 @@ impl StringOperations for RedisGateway {
         match SimpleDataModel::get(&self.fdb, key).await {
             Ok(Some(val)) => Frame::BulkString(val),
             Ok(None) => Frame::Null,
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e.to_string()),
         }
     }
 
     async fn del(&self, key: &[u8]) -> Frame {
         let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
+            Err(e) => return Frame::Error(e.to_string()),
         };
         if val.is_none() {
             return Frame::Integer(0i64);
         }
         match SimpleDataModel::delete(&self.fdb, key).await {
             Ok(val) => Frame::Integer(val),
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e.to_string()),
         }
     }
 
     async fn getdel(&self, key: &[u8]) -> Frame {
         let val = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
+            Err(e) => return Frame::Error(e.to_string()),
         };
-        match SimpleDataModel::delete(&self.fdb, key).await {
-            Err(e) => return Frame::Error(e.to_string().into()),
-            Ok(_) => (),
-        }
+        if let Err(e) = SimpleDataModel::delete(&self.fdb, key).await { return Frame::Error(e.to_string()) }
         match val {
             Some(val) => Frame::BulkString(val),
             None => Frame::Null,
@@ -132,7 +129,7 @@ impl StringOperations for RedisGateway {
     async fn append(&self, key: &[u8], value: &[u8]) -> Frame {
         let current = match SimpleDataModel::get(&self.fdb, key).await {
             Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
+            Err(e) => return Frame::Error(e.to_string()),
         };
         let mut new_value = Vec::new();
         if let Some(existing) = current {
@@ -142,7 +139,7 @@ impl StringOperations for RedisGateway {
         let len = new_value.len();
         if let Err(e) = SimpleDataModel::set(&self.fdb, key, &new_value, SetFlags::default()).await
         {
-            return Frame::Error(e.to_string().into());
+            return Frame::Error(e.to_string());
         }
         Frame::Integer(len as i64)
     }
