@@ -94,10 +94,11 @@ impl DataModel {
                 let batch = batch.to_vec();
                 let subspace = subspace.clone();
                 async move {
-                    for (i, chunk) in batch {
-                        let chunk_key = subspace.pack(&(i));
-                        trx.set(&chunk_key, &chunk);
-                    }
+                        for (i, chunk) in batch {
+                            // pack a single-element tuple consistently with retrieval (i,)
+                            let chunk_key = subspace.pack(&(i,));
+                            trx.set(&chunk_key, &chunk);
+                        }
                     Ok(())
                 }
             })

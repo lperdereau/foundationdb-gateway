@@ -8,7 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 enum SimpleDataPrefix {
     Data = 11,
     Ttl = 12,
-    Type = 13,
 }
 
 impl TuplePack for SimpleDataPrefix {
