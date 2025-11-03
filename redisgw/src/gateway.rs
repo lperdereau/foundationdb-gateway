@@ -8,6 +8,10 @@ use crate::operations::{
     SetOperations,
 };
 use fdb::FoundationDB;
+use foundationdb::RangeOption;
+use foundationdb_tuple::Subspace;
+use futures_util::TryStreamExt;
+use futures_util::stream::StreamExt;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 #[derive(Clone)]
@@ -96,63 +100,117 @@ impl StringOperations for RedisGateway {
     }
 
     async fn incr(&self, key: &[u8]) -> Frame {
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
-        };
-        let mut n = 0i64;
-        if let Some(bytes) = val {
-            let s = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => return Frame::Error("Value is not valid UTF-8".into()),
-            };
-            n = match s.parse::<i64>() {
-                Ok(num) => num,
-                Err(_) => return Frame::Error("Value is not a valid integer".into()),
-            };
+        // Perform read-modify-write in a single FoundationDB transaction to avoid lost updates
+        let key_vec = key.to_vec();
+        let db = self.fdb.clone();
+        let result = db
+            .database
+            .run(move |trx, _| {
+                let key = key_vec.clone();
+                async move {
+                    // range scan for chunks stored under the key prefix
+                    let mut end = key.clone();
+                    end.push(0xFF);
+                    let range = RangeOption::from((key.clone(), end));
+                    let stream = trx.get_ranges_keyvalues(range, false);
+                    // collect keyvalues
+                    let records = stream
+                        .map(|res| match res {
+                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
+                            Err(e) => Err(e),
+                        })
+                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
+                        .await?;
+
+                    // reconstruct current value
+                    let mut current = Vec::new();
+                    for (_k, v) in &records {
+                        current.extend_from_slice(v);
+                    }
+
+                    let mut n: i64 = 0;
+                    if !current.is_empty() {
+                        if let Ok(s) = std::str::from_utf8(&current) {
+                            if let Ok(num) = s.parse::<i64>() {
+                                n = num;
+                            }
+                        }
+                    }
+
+                    n += 1;
+
+                    // clear old chunks
+                    for (k, _) in &records {
+                        trx.clear(k);
+                    }
+
+                    // write new single chunk at index 0
+                    let subspace = Subspace::from_bytes(key.clone());
+                    let chunk_key = subspace.pack(&(0,));
+                    trx.set(&chunk_key, n.to_string().as_bytes());
+
+                    Ok(n)
+                }
+            })
+            .await;
+
+        match result {
+            Ok(n) => Frame::Integer(n),
+            Err(e) => Frame::Error(e.to_string().into()),
         }
-        n += 1;
-        if let Err(e) = SimpleDataModel::set(
-            &self.fdb,
-            key,
-            n.to_string().as_bytes(),
-            SetFlags::default(),
-        )
-        .await
-        {
-            return Frame::Error(e.to_string().into());
-        }
-        Frame::Integer(n)
     }
 
     async fn decr(&self, key: &[u8]) -> Frame {
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
-        };
-        let mut n = 0i64;
-        if let Some(bytes) = val {
-            let s = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => return Frame::Error("Value is not valid UTF-8".into()),
-            };
-            n = match s.parse::<i64>() {
-                Ok(num) => num,
-                Err(_) => return Frame::Error("Value is not a valid integer".into()),
-            };
+        // Transactional decrement to avoid lost updates under concurrency
+        let key_vec = key.to_vec();
+        let db = self.fdb.clone();
+        let result = db
+            .database
+            .run(move |trx, _| {
+                let key = key_vec.clone();
+                async move {
+                    let mut end = key.clone();
+                    end.push(0xFF);
+                    let range = RangeOption::from((key.clone(), end));
+                    let stream = trx.get_ranges_keyvalues(range, false);
+                    let records = stream
+                        .map(|res| match res {
+                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
+                            Err(e) => Err(e),
+                        })
+                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
+                        .await?;
+
+                    let mut current = Vec::new();
+                    for (_k, v) in &records {
+                        current.extend_from_slice(v);
+                    }
+                    let mut n: i64 = 0;
+                    if !current.is_empty() {
+                        if let Ok(s) = std::str::from_utf8(&current) {
+                            if let Ok(num) = s.parse::<i64>() {
+                                n = num;
+                            }
+                        }
+                    }
+
+                    n -= 1;
+
+                    for (k, _) in &records {
+                        trx.clear(k);
+                    }
+                    let subspace = Subspace::from_bytes(key.clone());
+                    let chunk_key = subspace.pack(&(0,));
+                    trx.set(&chunk_key, n.to_string().as_bytes());
+                    Ok(n)
+                }
+            })
+            .await;
+
+        match result {
+            Ok(n) => Frame::Integer(n),
+            Err(e) => Frame::Error(e.to_string().into()),
         }
-        n -= 1;
-        if let Err(e) = SimpleDataModel::set(
-            &self.fdb,
-            key,
-            n.to_string().as_bytes(),
-            SetFlags::default(),
-        )
-        .await
-        {
-            return Frame::Error(e.to_string().into());
-        }
-        Frame::Integer(n)
     }
 
     async fn incr_by(&self, key: &[u8], increment: &[u8]) -> Frame {
@@ -163,34 +221,57 @@ impl StringOperations for RedisGateway {
             None => return Frame::Error("ERR value is not an integer or out of range".into()),
             Some(i) => i,
         };
+        // Transactional increment-by
+        let key_vec = key.to_vec();
+        let db = self.fdb.clone();
+        let inc = int;
+        let result = db
+            .database
+            .run(move |trx, _| {
+                let key = key_vec.clone();
+                async move {
+                    let mut end = key.clone();
+                    end.push(0xFF);
+                    let range = RangeOption::from((key.clone(), end));
+                    let stream = trx.get_ranges_keyvalues(range, false);
+                    let records = stream
+                        .map(|res| match res {
+                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
+                            Err(e) => Err(e),
+                        })
+                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
+                        .await?;
 
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
-        };
-        let mut n = 0i64;
-        if let Some(bytes) = val {
-            let s = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => return Frame::Error("Value is not valid UTF-8".into()),
-            };
-            n = match s.parse::<i64>() {
-                Ok(num) => num,
-                Err(_) => return Frame::Error("Value is not a valid integer".into()),
-            };
+                    let mut current = Vec::new();
+                    for (_k, v) in &records {
+                        current.extend_from_slice(v);
+                    }
+                    let mut n: i64 = 0;
+                    if !current.is_empty() {
+                        if let Ok(s) = std::str::from_utf8(&current) {
+                            if let Ok(num) = s.parse::<i64>() {
+                                n = num;
+                            }
+                        }
+                    }
+
+                    n += inc;
+
+                    for (k, _) in &records {
+                        trx.clear(k);
+                    }
+                    let subspace = Subspace::from_bytes(key.clone());
+                    let chunk_key = subspace.pack(&(0,));
+                    trx.set(&chunk_key, n.to_string().as_bytes());
+                    Ok(n)
+                }
+            })
+            .await;
+
+        match result {
+            Ok(n) => Frame::Integer(n),
+            Err(e) => Frame::Error(e.to_string().into()),
         }
-        n += int;
-        if let Err(e) = SimpleDataModel::set(
-            &self.fdb,
-            key,
-            n.to_string().as_bytes(),
-            SetFlags::default(),
-        )
-        .await
-        {
-            return Frame::Error(e.to_string().into());
-        }
-        Frame::Integer(n)
     }
 
     async fn decr_by(&self, key: &[u8], decrement: &[u8]) -> Frame {
@@ -201,34 +282,57 @@ impl StringOperations for RedisGateway {
             None => return Frame::Error("ERR value is not an integer or out of range".into()),
             Some(i) => i,
         };
+        // Transactional decrement-by
+        let key_vec = key.to_vec();
+        let db = self.fdb.clone();
+        let dec = int;
+        let result = db
+            .database
+            .run(move |trx, _| {
+                let key = key_vec.clone();
+                async move {
+                    let mut end = key.clone();
+                    end.push(0xFF);
+                    let range = RangeOption::from((key.clone(), end));
+                    let stream = trx.get_ranges_keyvalues(range, false);
+                    let records = stream
+                        .map(|res| match res {
+                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
+                            Err(e) => Err(e),
+                        })
+                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
+                        .await?;
 
-        let val = match SimpleDataModel::get(&self.fdb, key).await {
-            Ok(v) => v,
-            Err(e) => return Frame::Error(e.to_string().into()),
-        };
-        let mut n = 0i64;
-        if let Some(bytes) = val {
-            let s = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => return Frame::Error("Value is not valid UTF-8".into()),
-            };
-            n = match s.parse::<i64>() {
-                Ok(num) => num,
-                Err(_) => return Frame::Error("Value is not a valid integer".into()),
-            };
+                    let mut current = Vec::new();
+                    for (_k, v) in &records {
+                        current.extend_from_slice(v);
+                    }
+                    let mut n: i64 = 0;
+                    if !current.is_empty() {
+                        if let Ok(s) = std::str::from_utf8(&current) {
+                            if let Ok(num) = s.parse::<i64>() {
+                                n = num;
+                            }
+                        }
+                    }
+
+                    n -= dec;
+
+                    for (k, _) in &records {
+                        trx.clear(k);
+                    }
+                    let subspace = Subspace::from_bytes(key.clone());
+                    let chunk_key = subspace.pack(&(0,));
+                    trx.set(&chunk_key, n.to_string().as_bytes());
+                    Ok(n)
+                }
+            })
+            .await;
+
+        match result {
+            Ok(n) => Frame::Integer(n),
+            Err(e) => Frame::Error(e.to_string().into()),
         }
-        n -= int;
-        if let Err(e) = SimpleDataModel::set(
-            &self.fdb,
-            key,
-            n.to_string().as_bytes(),
-            SetFlags::default(),
-        )
-        .await
-        {
-            return Frame::Error(e.to_string().into());
-        }
-        Frame::Integer(n)
     }
 
     async fn append(&self, key: &[u8], value: &[u8]) -> Frame {
