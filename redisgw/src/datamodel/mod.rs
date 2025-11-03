@@ -1,4 +1,4 @@
 mod mapmodel;
 mod simplemodel;
 
-pub(crate) use simplemodel::SimpleDataModel;
+pub(crate) use simplemodel::{SimpleDataModel, SimpleDataPrefix};

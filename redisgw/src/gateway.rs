@@ -1,4 +1,4 @@
-use crate::datamodel::SimpleDataModel;
+use crate::datamodel::{SimpleDataModel, SimpleDataPrefix};
 use crate::operations::{
     Flags,
     SetFlags,
@@ -9,7 +9,7 @@ use crate::operations::{
 };
 use fdb::FoundationDB;
 use foundationdb::RangeOption;
-use foundationdb_tuple::Subspace;
+use foundationdb_tuple::{Subspace, pack};
 use futures_util::TryStreamExt;
 use futures_util::stream::StreamExt;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
@@ -101,12 +101,13 @@ impl StringOperations for RedisGateway {
 
     async fn incr(&self, key: &[u8]) -> Frame {
         // Perform read-modify-write in a single FoundationDB transaction to avoid lost updates
-        let key_vec = key.to_vec();
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
         let db = self.fdb.clone();
+        let pk = packed_key.clone();
         let result = db
             .database
             .run(move |trx, _| {
-                let key = key_vec.clone();
+                let key = pk.clone();
                 async move {
                     // range scan for chunks stored under the key prefix
                     let mut end = key.clone();
@@ -162,12 +163,13 @@ impl StringOperations for RedisGateway {
 
     async fn decr(&self, key: &[u8]) -> Frame {
         // Transactional decrement to avoid lost updates under concurrency
-        let key_vec = key.to_vec();
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
         let db = self.fdb.clone();
+        let pk = packed_key.clone();
         let result = db
             .database
             .run(move |trx, _| {
-                let key = key_vec.clone();
+                let key = pk.clone();
                 async move {
                     let mut end = key.clone();
                     end.push(0xFF);
@@ -222,13 +224,14 @@ impl StringOperations for RedisGateway {
             Some(i) => i,
         };
         // Transactional increment-by
-        let key_vec = key.to_vec();
+        let packed_key = pack(&(11u64, key));
         let db = self.fdb.clone();
+        let pk = packed_key.clone();
         let inc = int;
         let result = db
             .database
             .run(move |trx, _| {
-                let key = key_vec.clone();
+                let key = pk.clone();
                 async move {
                     let mut end = key.clone();
                     end.push(0xFF);
@@ -283,13 +286,14 @@ impl StringOperations for RedisGateway {
             Some(i) => i,
         };
         // Transactional decrement-by
-        let key_vec = key.to_vec();
+        let packed_key = pack(&(11u64, key));
         let db = self.fdb.clone();
+        let pk = packed_key.clone();
         let dec = int;
         let result = db
             .database
             .run(move |trx, _| {
-                let key = key_vec.clone();
+                let key = pk.clone();
                 async move {
                     let mut end = key.clone();
                     end.push(0xFF);

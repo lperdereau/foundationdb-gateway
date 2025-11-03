@@ -5,7 +5,7 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SimpleDataPrefix {
+pub enum SimpleDataPrefix {
     Data = 11,
     Ttl = 12,
 }
