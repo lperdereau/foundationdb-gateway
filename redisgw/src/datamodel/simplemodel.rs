@@ -1,6 +1,10 @@
 use crate::operations::{SetFlags, SetMethod, SetTTL};
 use fdb::FoundationDB;
 use foundationdb_tuple::{TupleDepth, TuplePack, VersionstampOffset, pack};
+use foundationdb::RangeOption;
+use foundationdb_tuple::Subspace;
+use futures_util::stream::StreamExt;
+use futures_util::TryStreamExt;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -140,5 +144,76 @@ impl SimpleDataModel {
         fdb.delete(&packed_key)
             .await
             .map_err(|e| format!("FoundationDB set error: {:?}", e))
+    }
+
+    /// Atomically add `delta` to integer value stored at `key`.
+    /// Returns new value on success, or Err(String) on parse/FDB error.
+    pub async fn atomic_add(fdb: &FoundationDB, key: &[u8], delta: i64) -> Result<i64, String> {
+        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        let pk = packed_key.clone();
+        let db = fdb.clone();
+
+        let res = db
+            .database
+            .run(move |trx, _| {
+                let key = pk.clone();
+                async move {
+                    // range scan for chunks under packed key
+                    let mut end = key.clone();
+                    end.push(0xFF);
+                    let range = RangeOption::from((key.clone(), end));
+                    let stream = trx.get_ranges_keyvalues(range, false);
+                    let records = stream
+                        .map(|r| match r {
+                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
+                            Err(e) => Err(e),
+                        })
+                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
+                        .await?;
+
+                    // reconstruct current value
+                    let mut current = Vec::new();
+                    for (_k, v) in &records {
+                        current.extend_from_slice(v);
+                    }
+
+                    let mut n: i64 = 0;
+                    if !current.is_empty() {
+                        match std::str::from_utf8(&current) {
+                            Ok(s) => match s.parse::<i64>() {
+                                Ok(num) => n = num,
+                                Err(_) => {
+                                    // signal parse failure by returning (false, 0)
+                                    return Ok((false, 0i64));
+                                }
+                            },
+                            Err(_) => {
+                                return Ok((false, 0i64));
+                            }
+                        }
+                    }
+
+                    let new_n = n.wrapping_add(delta);
+
+                    // clear old chunks
+                    for (k, _) in &records {
+                        trx.clear(k);
+                    }
+
+                    // write new single chunk at index 0
+                    let subspace = Subspace::from_bytes(key.clone());
+                    let chunk_key = subspace.pack(&(0,));
+                    trx.set(&chunk_key, new_n.to_string().as_bytes());
+
+                    Ok((true, new_n))
+                }
+            })
+            .await;
+
+        match res {
+            Ok((true, v)) => Ok(v),
+            Ok((false, _)) => Err("Value is not a valid integer".to_string()),
+            Err(e) => Err(format!("FoundationDB error: {:?}", e)),
+        }
     }
 }

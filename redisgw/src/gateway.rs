@@ -1,4 +1,4 @@
-use crate::datamodel::{SimpleDataModel, SimpleDataPrefix};
+use crate::datamodel::SimpleDataModel;
 use crate::operations::{
     Flags,
     SetFlags,
@@ -8,10 +8,7 @@ use crate::operations::{
     SetOperations,
 };
 use fdb::FoundationDB;
-use foundationdb::RangeOption;
-use foundationdb_tuple::{Subspace, pack};
-use futures_util::TryStreamExt;
-use futures_util::stream::StreamExt;
+// transactional logic moved to SimpleDataModel
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 #[derive(Clone)]
@@ -100,118 +97,16 @@ impl StringOperations for RedisGateway {
     }
 
     async fn incr(&self, key: &[u8]) -> Frame {
-        // Perform read-modify-write in a single FoundationDB transaction to avoid lost updates
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        let db = self.fdb.clone();
-        let pk = packed_key.clone();
-        let result = db
-            .database
-            .run(move |trx, _| {
-                let key = pk.clone();
-                async move {
-                    // range scan for chunks stored under the key prefix
-                    let mut end = key.clone();
-                    end.push(0xFF);
-                    let range = RangeOption::from((key.clone(), end));
-                    let stream = trx.get_ranges_keyvalues(range, false);
-                    // collect keyvalues
-                    let records = stream
-                        .map(|res| match res {
-                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
-                            Err(e) => Err(e),
-                        })
-                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
-                        .await?;
-
-                    // reconstruct current value
-                    let mut current = Vec::new();
-                    for (_k, v) in &records {
-                        current.extend_from_slice(v);
-                    }
-
-                    let mut n: i64 = 0;
-                    if !current.is_empty() {
-                        if let Ok(s) = std::str::from_utf8(&current) {
-                            if let Ok(num) = s.parse::<i64>() {
-                                n = num;
-                            }
-                        }
-                    }
-
-                    n += 1;
-
-                    // clear old chunks
-                    for (k, _) in &records {
-                        trx.clear(k);
-                    }
-
-                    // write new single chunk at index 0
-                    let subspace = Subspace::from_bytes(key.clone());
-                    let chunk_key = subspace.pack(&(0,));
-                    trx.set(&chunk_key, n.to_string().as_bytes());
-
-                    Ok(n)
-                }
-            })
-            .await;
-
-        match result {
+        match SimpleDataModel::atomic_add(&self.fdb, key, 1).await {
             Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e),
         }
     }
 
     async fn decr(&self, key: &[u8]) -> Frame {
-        // Transactional decrement to avoid lost updates under concurrency
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        let db = self.fdb.clone();
-        let pk = packed_key.clone();
-        let result = db
-            .database
-            .run(move |trx, _| {
-                let key = pk.clone();
-                async move {
-                    let mut end = key.clone();
-                    end.push(0xFF);
-                    let range = RangeOption::from((key.clone(), end));
-                    let stream = trx.get_ranges_keyvalues(range, false);
-                    let records = stream
-                        .map(|res| match res {
-                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
-                            Err(e) => Err(e),
-                        })
-                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
-                        .await?;
-
-                    let mut current = Vec::new();
-                    for (_k, v) in &records {
-                        current.extend_from_slice(v);
-                    }
-                    let mut n: i64 = 0;
-                    if !current.is_empty() {
-                        if let Ok(s) = std::str::from_utf8(&current) {
-                            if let Ok(num) = s.parse::<i64>() {
-                                n = num;
-                            }
-                        }
-                    }
-
-                    n -= 1;
-
-                    for (k, _) in &records {
-                        trx.clear(k);
-                    }
-                    let subspace = Subspace::from_bytes(key.clone());
-                    let chunk_key = subspace.pack(&(0,));
-                    trx.set(&chunk_key, n.to_string().as_bytes());
-                    Ok(n)
-                }
-            })
-            .await;
-
-        match result {
+        match SimpleDataModel::atomic_add(&self.fdb, key, -1).await {
             Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e),
         }
     }
 
@@ -223,57 +118,9 @@ impl StringOperations for RedisGateway {
             None => return Frame::Error("ERR value is not an integer or out of range".into()),
             Some(i) => i,
         };
-        // Transactional increment-by
-        let packed_key = pack(&(11u64, key));
-        let db = self.fdb.clone();
-        let pk = packed_key.clone();
-        let inc = int;
-        let result = db
-            .database
-            .run(move |trx, _| {
-                let key = pk.clone();
-                async move {
-                    let mut end = key.clone();
-                    end.push(0xFF);
-                    let range = RangeOption::from((key.clone(), end));
-                    let stream = trx.get_ranges_keyvalues(range, false);
-                    let records = stream
-                        .map(|res| match res {
-                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
-                            Err(e) => Err(e),
-                        })
-                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
-                        .await?;
-
-                    let mut current = Vec::new();
-                    for (_k, v) in &records {
-                        current.extend_from_slice(v);
-                    }
-                    let mut n: i64 = 0;
-                    if !current.is_empty() {
-                        if let Ok(s) = std::str::from_utf8(&current) {
-                            if let Ok(num) = s.parse::<i64>() {
-                                n = num;
-                            }
-                        }
-                    }
-
-                    n += inc;
-
-                    for (k, _) in &records {
-                        trx.clear(k);
-                    }
-                    let subspace = Subspace::from_bytes(key.clone());
-                    let chunk_key = subspace.pack(&(0,));
-                    trx.set(&chunk_key, n.to_string().as_bytes());
-                    Ok(n)
-                }
-            })
-            .await;
-
-        match result {
+        match SimpleDataModel::atomic_add(&self.fdb, key, int).await {
             Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e),
         }
     }
 
@@ -285,57 +132,9 @@ impl StringOperations for RedisGateway {
             None => return Frame::Error("ERR value is not an integer or out of range".into()),
             Some(i) => i,
         };
-        // Transactional decrement-by
-        let packed_key = pack(&(11u64, key));
-        let db = self.fdb.clone();
-        let pk = packed_key.clone();
-        let dec = int;
-        let result = db
-            .database
-            .run(move |trx, _| {
-                let key = pk.clone();
-                async move {
-                    let mut end = key.clone();
-                    end.push(0xFF);
-                    let range = RangeOption::from((key.clone(), end));
-                    let stream = trx.get_ranges_keyvalues(range, false);
-                    let records = stream
-                        .map(|res| match res {
-                            Ok(v) => Ok((v.key().to_vec(), v.value().to_vec())),
-                            Err(e) => Err(e),
-                        })
-                        .try_collect::<Vec<(Vec<u8>, Vec<u8>)>>()
-                        .await?;
-
-                    let mut current = Vec::new();
-                    for (_k, v) in &records {
-                        current.extend_from_slice(v);
-                    }
-                    let mut n: i64 = 0;
-                    if !current.is_empty() {
-                        if let Ok(s) = std::str::from_utf8(&current) {
-                            if let Ok(num) = s.parse::<i64>() {
-                                n = num;
-                            }
-                        }
-                    }
-
-                    n -= dec;
-
-                    for (k, _) in &records {
-                        trx.clear(k);
-                    }
-                    let subspace = Subspace::from_bytes(key.clone());
-                    let chunk_key = subspace.pack(&(0,));
-                    trx.set(&chunk_key, n.to_string().as_bytes());
-                    Ok(n)
-                }
-            })
-            .await;
-
-        match result {
+        match SimpleDataModel::atomic_add(&self.fdb, key, -int).await {
             Ok(n) => Frame::Integer(n),
-            Err(e) => Frame::Error(e.to_string().into()),
+            Err(e) => Frame::Error(e),
         }
     }
 
