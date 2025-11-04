@@ -11,14 +11,14 @@ impl ConnectionOperations for RedisGateway {
         };
 
         match msg {
-            Some(res) => Frame::SimpleString(res.into()),
+            Some(res) => Frame::BulkString(res.into()),
             None => Frame::SimpleString(b"PONG".to_vec()),
         }
     }
 
     async fn echo(&self, message: Vec<&[u8]>) -> Frame {
         if let Some(arg) = message.first() {
-            Frame::SimpleString(arg.to_vec())
+            Frame::BulkString(arg.to_vec())
         } else {
             Frame::Error("ERR wrong number of arguments for 'ECHO' command".into())
         }
@@ -56,7 +56,11 @@ impl ConnectionOperations for RedisGateway {
     }
 
     async fn quit(&self) -> Frame {
-        // Handler returns OK; server is responsible for closing socket
+        if let Some(sc) = &self.socket_cfg {
+            if let Ok(mut w) = sc.write() {
+                w.mark_close();
+            }
+        }
         Frame::SimpleString(b"OK".to_vec())
     }
 }
