@@ -1,3 +1,8 @@
+pub mod operations;
+pub mod gateway;
+pub mod commands;
+mod datamodel;
+
 use crate::command::CommandHandler;
 use crate::gateway::RedisGateway;
 use redis_protocol::resp2::{
@@ -7,6 +12,7 @@ use redis_protocol::resp2::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
 use crate::config::{SharedSocketConfig, SocketConfig};
 use std::sync::{Arc, RwLock};
 
@@ -119,7 +125,8 @@ impl Server {
                         })
                         .collect();
                     let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
-                    handler.handle(gateway, cmd_str, args).await
+                    let response = handler.handle(gateway, cmd_str, args).await;
+                    response
                 } else {
                     Frame::Error("ERR invalid command".into())
                 }

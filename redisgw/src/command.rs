@@ -93,6 +93,13 @@ fn build_command_map() -> CmdMap {
         }
     }
 
+    // Register server commands
+    if let Ok(server_map) = std::panic::catch_unwind(crate::server::commands::commands) {
+        for (k, h) in server_map.into_iter() {
+            map.insert(k.to_ascii_uppercase(), h);
+        }
+    }
+
     map
 }
 

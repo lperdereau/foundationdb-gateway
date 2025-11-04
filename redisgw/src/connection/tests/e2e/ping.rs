@@ -31,7 +31,7 @@ async fn test_e2e_ping() {
     let n = stream.read(&mut buf).await.expect("read2");
     let opt = decode(&buf[..n]).expect("decode2");
     let (frame, _used) = opt.expect("frame2");
-    assert!(matches!(frame, Frame::SimpleString(s) if s == b"hello".to_vec()));
+    assert!(matches!(frame, Frame::BulkString(s) if s == b"hello".to_vec()));
 
     // Tear down
     drop(stream);
