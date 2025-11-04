@@ -7,34 +7,13 @@ crate::command_handler_static!(ACL_CMD, |gw, args| async move {
     if args.is_empty() {
         return Frame::Error("ERR wrong number of arguments for 'ACL' command".into());
     }
-    // build borrowed refs for parsing
+
     let refs: Vec<&[u8]> = args.iter().map(|v| v.as_slice()).collect();
     match parse_acl_command(&refs) {
-        Ok(ACLMethod::SetUser { user, password, rules }) => match gw.set_user(user, password, rules).await {
-            Ok(()) => Frame::SimpleString(b"OK".to_vec()),
-            Err(e) => Frame::Error(format!("ERR acl setuser failed: {}", e)),
-        },
-        Ok(ACLMethod::GetUser { user }) => match gw.get_user(user).await {
-            Ok(Some(u)) => {
-                let mut arr = Vec::new();
-                arr.push(Frame::BulkString(user.to_vec()));
-                if let Some(r) = u.rules { arr.push(Frame::BulkString(r.into_bytes())); } else { arr.push(Frame::Null); }
-                Frame::Array(arr)
-            }
-            Ok(None) => Frame::Error("ERR no such user".into()),
-            Err(e) => Frame::Error(format!("ERR acl backend error: {}", e)),
-        },
-        Ok(ACLMethod::DelUser { user }) => match gw.del_user(user).await {
-            Ok(()) => Frame::SimpleString(b"OK".to_vec()),
-            Err(e) => Frame::Error(format!("ERR acl deluser failed: {}", e)),
-        },
-        Ok(ACLMethod::List) => match gw.list_users().await {
-            Ok(list) => {
-                let arr = list.into_iter().map(|s| Frame::BulkString(s.into_bytes())).collect();
-                Frame::Array(arr)
-            }
-            Err(e) => Frame::Error(format!("ERR acl list failed: {}", e)),
-        },
+        Ok(ACLMethod::SetUser { user, password, rules }) => gw.set_user(user, password, rules).await,
+        Ok(ACLMethod::GetUser { user }) => gw.get_user(user).await,
+        Ok(ACLMethod::DelUser { user }) => gw.del_user(user).await,
+        Ok(ACLMethod::List) => gw.list_users().await,
         Err(e) => Frame::Error(e),
     }
 });

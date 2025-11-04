@@ -9,13 +9,13 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SimpleDataPrefix {
+pub enum StringPrefix {
     Data = 11,
     Ttl = 12,
     Lock = 13,
 }
 
-impl TuplePack for SimpleDataPrefix {
+impl TuplePack for StringPrefix {
     fn pack<W: Write>(
         &self,
         w: &mut W,
@@ -40,7 +40,7 @@ impl StringDataModel {
         value: &[u8],
         flags: SetFlags,
     ) -> Result<Option<Vec<u8>>, String> {
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        let packed_key = pack(&(StringPrefix::Data, key));
         let mut old_val = None;
 
         let existing = if flags.get || flags.method.is_some() {
@@ -96,7 +96,7 @@ impl StringDataModel {
     }
 
     pub async fn set_ttl(&self, key: &[u8], ttl: u128) -> Result<(), String> {
-        let packed_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let packed_key = pack(&(StringPrefix::Ttl, key));
         let ttl_bytes = ttl.to_be_bytes();
         self.fdb
             .set(&packed_key, &ttl_bytes)
@@ -111,7 +111,7 @@ impl StringDataModel {
 
         let start = Instant::now();
         let mut backoff = 10u64; // ms
-        let lock_key = pack(&(SimpleDataPrefix::Lock, key));
+        let lock_key = pack(&(StringPrefix::Lock, key));
 
         while start.elapsed().as_millis() as u64 <= timeout_ms {
             // Try to create the lock in a short transaction: read then set if absent.
@@ -154,7 +154,7 @@ impl StringDataModel {
 
     /// Release the per-key lock acquired with `acquire_lock`.
     pub async fn release_lock(&self, key: &[u8]) -> Result<(), String> {
-        let lock_key = pack(&(SimpleDataPrefix::Lock, key));
+        let lock_key = pack(&(StringPrefix::Lock, key));
         // Perform a short transaction to clear the lock key to avoid ambiguity with other delete helpers
         let lk = lock_key.clone();
         let db = self.fdb.clone();
@@ -173,7 +173,7 @@ impl StringDataModel {
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        let packed_key = pack(&(StringPrefix::Data, key));
         // Read value and TTL (if any). If TTL exists and is expired, delete both and return None.
         let value = self
             .fdb
@@ -187,7 +187,7 @@ impl StringDataModel {
         }
 
         // Check TTL
-        let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let packed_ttl_key = pack(&(StringPrefix::Ttl, key));
         let ttl_bytes_opt = self
             .fdb
             .get(&packed_ttl_key)
@@ -229,8 +229,8 @@ impl StringDataModel {
     pub async fn delete(&self, key: &[u8]) -> Result<i64, String> {
         // Acquire lock before deleting
         self.acquire_lock(key, 5000).await?;
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
-        let packed_ttl_key = pack(&(SimpleDataPrefix::Ttl, key));
+        let packed_key = pack(&(StringPrefix::Data, key));
+        let packed_ttl_key = pack(&(StringPrefix::Ttl, key));
         let r1 = self.fdb.delete(&packed_key).await;
         let r2 = self.fdb.delete(&packed_ttl_key).await;
         // best-effort release
@@ -249,7 +249,7 @@ impl StringDataModel {
     /// Atomically add `delta` to integer value stored at `key`.
     /// Returns new value on success, or Err(String) on parse/FDB error.
     pub async fn atomic_add(&self, key: &[u8], delta: i64) -> Result<i64, String> {
-        let packed_key = pack(&(SimpleDataPrefix::Data, key));
+        let packed_key = pack(&(StringPrefix::Data, key));
         let pk = packed_key.clone();
         let db = self.fdb.clone();
         // Acquire lock to serialize potentially large transactional writes
