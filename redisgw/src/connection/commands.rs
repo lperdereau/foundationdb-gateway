@@ -50,9 +50,7 @@ crate::command_handler_static!(CLIENT_CMD, |gw, args| async move {
     }
 });
 
-crate::command_handler_static!(QUIT, |gw, _args| async move {
-    gw.quit().await
-});
+crate::command_handler_static!(QUIT, |gw, _args| gw.quit());
 
 /// Return a map of command name -> handler for connection-related commands.
 pub fn commands() -> CmdMap {
