@@ -125,8 +125,7 @@ impl Server {
                         })
                         .collect();
                     let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
-                    let response = handler.handle(gateway, cmd_str, args).await;
-                    response
+                    handler.handle(gateway, cmd_str, args).await
                 } else {
                     Frame::Error("ERR invalid command".into())
                 }
