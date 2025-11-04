@@ -7,6 +7,8 @@ use redis_protocol::resp2::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use crate::config::{SharedSocketConfig, SocketConfig};
+use std::sync::{Arc, RwLock};
 
 pub struct Server {
     addr: String,
@@ -35,6 +37,8 @@ impl Server {
         const INITIAL_BUF_SIZE: usize = 8 * 1024; // 8KB
         const MAX_BUF_SIZE: usize = 512 * 1024 * 1024; // 512MB
 
+        // create per-connection socket config and attach to a cloned gateway
+        let socket_cfg: SharedSocketConfig = Arc::new(RwLock::new(SocketConfig::default()));
         let mut buf = vec![0u8; INITIAL_BUF_SIZE];
         let mut offset = 0;
 
@@ -79,20 +83,29 @@ impl Server {
                 offset = 0;
             }
 
+            // build a per-connection gateway (base gateway cloned from handler)
+            let base_gw = handler.base_gateway();
+            let per_conn_gw = base_gw.with_socket_config(socket_cfg.clone());
+
             for frame in frames {
-                let (response, should_close) = Self::process_command(&frame, &handler).await;
+                let response = Self::process_command(&frame, &handler, per_conn_gw.clone()).await;
                 let mut out = vec![0u8; response.encode_len(false)];
                 let _ = encode(&mut out, &response, false);
                 let _ = socket.write_all(&out).await;
+
+                // Check if handler requested connection close via socket config
+                let should_close = {
+                    let r = socket_cfg.read().unwrap();
+                    r.should_close
+                };
                 if should_close {
-                    // Close connection after replying to QUIT
                     return;
                 }
             }
         }
     }
 
-    async fn process_command(frame: &Frame, handler: &CommandHandler) -> (Frame, bool) {
+    async fn process_command(frame: &Frame, handler: &CommandHandler, gateway: RedisGateway) -> Frame {
         match frame {
             Frame::Array(arr) if !arr.is_empty() => {
                 if let Frame::BulkString(cmd) = &arr[0] {
@@ -106,13 +119,12 @@ impl Server {
                         })
                         .collect();
                     let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
-                    let (response, should_close) = handler.handle(cmd_str, args).await;
-                    (response, should_close)
+                    handler.handle(gateway, cmd_str, args).await
                 } else {
-                    (Frame::Error("ERR invalid command".into()), false)
+                    Frame::Error("ERR invalid command".into())
                 }
             }
-            _ => (Frame::Error("ERR invalid command".into()), false),
+            _ => Frame::Error("ERR invalid command".into()),
         }
     }
 }

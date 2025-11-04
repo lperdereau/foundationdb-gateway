@@ -3,6 +3,7 @@ pub mod connection;
 pub mod string;
 pub mod list;
 pub mod set;
+pub mod config;
 pub mod gateway;
 pub mod server;
 

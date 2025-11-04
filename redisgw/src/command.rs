@@ -16,14 +16,14 @@ pub type CmdMap = HashMap<String, Arc<CmdHandler>>;
 
 /// Boxed future alias to reduce repetition in handler types.
 /// Use the `futures` crate generic boxed future specialized to our `Frame` type.
-/// Boxed future alias returning (Frame, should_close)
-pub type BoxFuture = futures::future::BoxFuture<'static, (Frame, bool)>;
+/// Boxed future alias returning Frame
+pub type BoxFuture = futures::future::BoxFuture<'static, Frame>;
 
 /// Convenience boxed handler type (sized) used when constructing handlers.
 pub type BoxedCmdHandler = Box<dyn Fn(RedisGateway, Vec<Vec<u8>>) -> BoxFuture + Send + Sync + 'static>;
 
 /// Helper which accepts a closure returning a Future<Output = Frame> and adapts
-/// it into a handler that returns (Frame, false).
+/// it into a handler returning that Frame.
 pub fn boxed_handler<F, Fut>(f: F) -> Arc<CmdHandler>
 where
     F: Fn(RedisGateway, Vec<Vec<u8>>) -> Fut + Send + Sync + 'static,
@@ -31,33 +31,19 @@ where
 {
     Arc::from(Box::new(move |gw: RedisGateway, args: Vec<Vec<u8>>| {
         let fut = f(gw, args);
-        Box::pin(async move { (fut.await, false) }) as BoxFuture
+        Box::pin(fut) as BoxFuture
     }) as BoxedCmdHandler)
 }
 
-/// Helper which accepts a closure returning Future<Output = (Frame,bool)> and
-/// returns it directly as a CmdHandler.
-pub fn boxed_handler_with_signal<F, Fut>(f: F) -> Arc<CmdHandler>
-where
-    F: Fn(RedisGateway, Vec<Vec<u8>>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Frame, bool)> + Send + 'static,
-{
-    Arc::from(Box::new(move |gw: RedisGateway, args: Vec<Vec<u8>>| {
-        Box::pin(f(gw, args)) as BoxFuture
-    }) as BoxedCmdHandler)
-}
 
 /// Macro helper to create a boxed, pinned, Arc-wrapped command handler from an
-/// async block or expression that returns a `Frame`. The helper will wrap the
-/// result into `(Frame, false)` so the server knows not to close the
-/// connection.
+/// async block or expression that returns a `Frame`.
 #[macro_export]
 macro_rules! command_handler {
     (|$gw:ident, $args:ident| $body:expr) => {{
         ::std::sync::Arc::from(::std::boxed::Box::new(move |$gw: $crate::gateway::RedisGateway, $args: Vec<Vec<u8>>| {
             ::std::boxed::Box::pin(async move {
-                let __res = $body.await;
-                (__res, false)
+                $body.await
             }) as $crate::command::BoxFuture
         }) as $crate::command::BoxedCmdHandler)
     }};
@@ -73,25 +59,8 @@ macro_rules! command_handler_static {
     };
 }
 
-/// Create a handler from an async block that returns `(Frame, bool)` so the
-/// handler itself can signal the server to close the connection.
-#[macro_export]
-macro_rules! command_handler_signal {
-    (|$gw:ident, $args:ident| $body:expr) => {{
-        ::std::sync::Arc::from(::std::boxed::Box::new(move |$gw: $crate::gateway::RedisGateway, $args: Vec<Vec<u8>>| {
-            ::std::boxed::Box::pin($body) as $crate::command::BoxFuture
-        }) as $crate::command::BoxedCmdHandler)
-    }};
-}
-
-/// Define a static Lazy Arc-wrapped command handler that can return a signal.
-#[macro_export]
-macro_rules! command_handler_static_with_signal {
-    ($name:ident, |$gw:ident, $args:ident| $body:expr) => {
-        static $name: ::once_cell::sync::Lazy<::std::sync::Arc<$crate::command::CmdHandler>> =
-            ::once_cell::sync::Lazy::new(|| { $crate::command_handler_signal!(|$gw, $args| $body) });
-    };
-}
+// signal-style handlers were removed in favor of using per-socket `SocketConfig`
+// to request connection closure.
 
 fn build_command_map() -> CmdMap {
     let mut map: CmdMap = HashMap::new();
@@ -134,21 +103,31 @@ impl CommandHandler {
         Self { gateway, map: Arc::new(map) }
     }
 
-    pub async fn handle(&self, cmd_str: &str, args: Vec<&[u8]>) -> (Frame, bool) {
+    /// Access the base gateway used when the CommandHandler was constructed.
+    /// This can be cloned and augmented with a per-connection SocketConfig.
+    pub fn base_gateway(&self) -> RedisGateway {
+        self.gateway.clone()
+    }
+
+    /// Handle a command using the provided per-connection `gateway` instance.
+    /// Handlers return a `Frame`; any side-effect on connection lifecycle must
+    /// be performed by mutating the per-connection `SocketConfig` available
+    /// via `gateway.socket_cfg`.
+    pub async fn handle(&self, gateway: crate::gateway::RedisGateway, cmd_str: &str, args: Vec<&[u8]>) -> Frame {
         let key = cmd_str.to_ascii_uppercase();
         if let Some(h) = self.map.get(&key) {
             let owned_args = args.iter().map(|s| s.to_vec()).collect::<Vec<_>>();
-            (h)(self.gateway.clone(), owned_args).await
+            (h)(gateway, owned_args).await
         } else {
             let args_str: String = args
                 .iter()
                 .filter_map(|s| std::str::from_utf8(s).ok())
                 .collect::<Vec<&str>>()
                 .join(" ");
-            (Frame::Error(format!(
+            Frame::Error(format!(
                 "ERR unknown command '{}', with args beginning with: '{}'",
                 cmd_str, args_str
-            )), false)
+            ))
         }
     }
 }

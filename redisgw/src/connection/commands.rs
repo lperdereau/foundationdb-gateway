@@ -50,8 +50,14 @@ crate::command_handler_static!(CLIENT_CMD, |gw, args| async move {
     }
 });
 
-crate::command_handler_static_with_signal!(QUIT, |gw, _args| async move {
-    (gw.quit().await, true)
+crate::command_handler_static!(QUIT, |gw, _args| async move {
+    // mark connection to be closed after reply
+    if let Some(sc) = &gw.socket_cfg {
+        if let Ok(mut w) = sc.write() {
+            w.mark_close();
+        }
+    }
+    gw.quit().await
 });
 
 /// Return a map of command name -> handler for connection-related commands.
