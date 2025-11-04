@@ -3,6 +3,9 @@ pub mod gateway;
 pub mod commands;
 mod datamodel;
 
+#[cfg(test)]
+pub mod tests;
+
 use crate::command::CommandHandler;
 use crate::gateway::RedisGateway;
 use redis_protocol::resp2::{

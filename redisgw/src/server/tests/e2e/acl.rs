@@ -1,5 +1,5 @@
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
-use redis_protocol::resp2::{encode::encode, decode::decode, types::{OwnedFrame as Frame}};
+use redis_protocol::resp2::{decode::decode, encode::encode, types::{OwnedFrame as Frame, Resp2Frame}};
 
 #[tokio::test]
 async fn test_e2e_acl_set_get_del() {
