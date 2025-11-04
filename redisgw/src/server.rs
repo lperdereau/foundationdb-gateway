@@ -80,15 +80,19 @@ impl Server {
             }
 
             for frame in frames {
-                let response = Self::process_command(&frame, &handler).await;
+                let (response, should_close) = Self::process_command(&frame, &handler).await;
                 let mut out = vec![0u8; response.encode_len(false)];
                 let _ = encode(&mut out, &response, false);
                 let _ = socket.write_all(&out).await;
+                if should_close {
+                    // Close connection after replying to QUIT
+                    return;
+                }
             }
         }
     }
 
-    async fn process_command(frame: &Frame, handler: &CommandHandler) -> Frame {
+    async fn process_command(frame: &Frame, handler: &CommandHandler) -> (Frame, bool) {
         match frame {
             Frame::Array(arr) if !arr.is_empty() => {
                 if let Frame::BulkString(cmd) = &arr[0] {
@@ -101,15 +105,14 @@ impl Server {
                             _ => None,
                         })
                         .collect();
-
-                    handler
-                        .handle(std::str::from_utf8(cmd).unwrap_or(""), args)
-                        .await
+                    let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
+                    let (response, should_close) = handler.handle(cmd_str, args).await;
+                    (response, should_close)
                 } else {
-                    Frame::Error("ERR invalid command".into())
+                    (Frame::Error("ERR invalid command".into()), false)
                 }
             }
-            _ => Frame::Error("ERR invalid command".into()),
+            _ => (Frame::Error("ERR invalid command".into()), false),
         }
     }
 }
