@@ -117,20 +117,21 @@ impl Server {
     async fn process_command(frame: &Frame, handler: &CommandHandler, gateway: RedisGateway) -> Frame {
         match frame {
             Frame::Array(arr) if !arr.is_empty() => {
-                if let Frame::BulkString(cmd) = &arr[0] {
-                    // Collect arguments as Vec<&[u8]>
-                    let args: Vec<&[u8]> = arr[1..]
-                        .iter()
-                        .filter_map(|f| match f {
-                            Frame::BulkString(arg) => Some(arg.as_slice()),
-                            Frame::SimpleString(arg) => Some(arg.as_slice()),
-                            _ => None,
-                        })
-                        .collect();
-                    let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
-                    handler.handle(gateway, cmd_str, args).await
-                } else {
-                    Frame::Error("ERR invalid command".into())
+                match &arr[0] {
+                    Frame::BulkString(cmd) | Frame::SimpleString(cmd) => {
+                        // Collect arguments as Vec<&[u8]>
+                        let args: Vec<&[u8]> = arr[1..]
+                            .iter()
+                            .filter_map(|f| match f {
+                                Frame::BulkString(arg) => Some(arg.as_slice()),
+                                Frame::SimpleString(arg) => Some(arg.as_slice()),
+                                _ => None,
+                            })
+                            .collect();
+                        let cmd_str = std::str::from_utf8(cmd).unwrap_or("");
+                        handler.handle(gateway, cmd_str, args).await
+                    }
+                    _ => Frame::Error("ERR invalid command".into()),
                 }
             }
             _ => Frame::Error("ERR invalid command".into()),

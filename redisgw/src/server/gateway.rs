@@ -67,4 +67,17 @@ impl ServerOperations for RedisGateway {
             Err(e) => Frame::Error(format!("ERR acl list failed: {}", e)),
         }
     }
+
+    async fn whoami(&self) -> Frame {
+        // Default Redis user name is "default" when not authenticated
+        let default = "default".to_string();
+        if let Some(sc) = &self.socket_cfg {
+            // sc is SharedSocketConfig = Arc<RwLock<SocketConfig>>
+            let r = sc.read().unwrap();
+            let user = r.authenticated_user.clone().unwrap_or(default);
+            Frame::BulkString(user.into_bytes())
+        } else {
+            Frame::BulkString(default.into_bytes())
+        }
+    }
 }

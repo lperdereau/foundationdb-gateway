@@ -1,5 +1,6 @@
 use crate::gateway::RedisGateway;
 use crate::connection::operations::ConnectionOperations;
+use crate::server::operations::ServerOperations;
 use redis_protocol::resp2::types::OwnedFrame as Frame;
 
 impl ConnectionOperations for RedisGateway {
@@ -40,9 +41,20 @@ impl ConnectionOperations for RedisGateway {
         }
     }
 
-    async fn auth(&self, _username: Option<&[u8]>, _password: &[u8]) -> Frame {
-        // Stub: accept any credentials for now
-        Frame::SimpleString(b"OK".to_vec())
+    async fn auth(&self, username: Option<&[u8]>, password: &[u8]) -> Frame {
+        let user = username.unwrap_or(b"default");
+        let reply = self.verify_user(user, password).await;
+        // if verification returned OK, mark socket as authenticated
+        if let Frame::SimpleString(s) = &reply {
+            if s == b"OK" {
+                if let Some(sc) = &self.socket_cfg {
+                    if let Ok(mut w) = sc.write() {
+                        w.authenticated_user = Some(String::from_utf8_lossy(user).into_owned());
+                    }
+                }
+            }
+        }
+        reply
     }
 
     async fn client_getname(&self) -> Frame {

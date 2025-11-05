@@ -11,4 +11,6 @@ pub trait ServerOperations {
     fn del_user(&self, username: &[u8]) -> impl std::future::Future<Output = Frame> + Send;
 
     fn list_users(&self) -> impl std::future::Future<Output = Frame> + Send;
+
+    fn whoami(&self) -> impl std::future::Future<Output = Frame> + Send;
 }

@@ -5,6 +5,7 @@ pub enum ACLMethod<'a> {
     SetUser { user: &'a [u8], password: &'a [u8], rules: Option<&'a [u8]> },
     GetUser { user: &'a [u8] },
     DelUser { user: &'a [u8] },
+    WhoAmI,
     List,
 }
 
@@ -38,6 +39,7 @@ pub fn parse_acl_command<'a>(args: &'a [&'a [u8]]) -> Result<ACLMethod<'a>, Stri
             Ok(ACLMethod::DelUser { user: args[1] })
         }
         "LIST" => Ok(ACLMethod::List),
+        "WHOAMI" => Ok(ACLMethod::WhoAmI),
         other => Err(format!("ERR unknown ACL subcommand: {}", other)),
     }
 }
