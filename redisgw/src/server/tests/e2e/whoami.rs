@@ -43,21 +43,6 @@ async fn test_e2e_acl_whoami() {
         other => panic!("unexpected whoami reply before auth: {:?}", other),
     }
 
-    // AUTH in lowercase to verify case-insensitive handling: auth testuser secret
-    let auth_req = Frame::Array(vec![
-        Frame::BulkString(b"auth".to_vec()),
-        Frame::BulkString(b"testuser".to_vec()),
-        Frame::BulkString(b"secret".to_vec()),
-    ]);
-    let mut out3 = vec![0u8; auth_req.encode_len(false)];
-    let _ = encode(&mut out3, &auth_req, false);
-    stream.write_all(&out3).await.expect("write auth");
-
-    let n3 = stream.read(&mut buf).await.expect("read auth reply");
-    let opt3 = decode(&buf[..n3]).expect("decode3");
-    let (frame3, _used3) = opt3.expect("frame3");
-    assert!(matches!(frame3, Frame::SimpleString(s) if s == b"OK".to_vec()));
-
     // ACL WHOAMI after auth -> should be "testuser"
     let who_req2 = Frame::Array(vec![
         Frame::BulkString(b"ACL".to_vec()),

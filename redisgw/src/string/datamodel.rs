@@ -145,7 +145,14 @@ impl StringDataModel {
                     backoff = (backoff * 2).min(500);
                     continue;
                 }
-                Err(e) => return Err(format!("FoundationDB error while acquiring lock: {:?}", e)),
+                Err(e) => {
+                    // Treat transient FoundationDB errors (transaction aborts, timeouts) as retryable.
+                    // Log the error and sleep with backoff, then retry until overall timeout is reached.
+                    eprintln!("FoundationDB transient error while acquiring lock: {:?}. retrying...", e);
+                    sleep(std::time::Duration::from_millis(backoff)).await;
+                    backoff = (backoff * 2).min(500);
+                    continue;
+                }
             }
         }
 
