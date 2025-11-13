@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum StringPrefix {
     Data = 11,
     Ttl = 12,
-    Lock = 13,
 }
 
 impl TuplePack for StringPrefix {
@@ -70,12 +69,8 @@ impl StringDataModel {
             }
         }
 
-    // Acquire per-key lock to avoid concurrent large writes
-    // increase timeout under heavy contention
-    self.acquire_lock(key, 30000).await?;
         let set_res = self.fdb.set(&packed_key, value).await;
         if let Err(e) = set_res {
-            let _ = self.release_lock(key).await; // best-effort
             return Err(format!("FoundationDB set error: {:?}", e));
         }
 
@@ -90,9 +85,6 @@ impl StringDataModel {
             }
         }
 
-        // Release lock
-        self.release_lock(key).await?;
-
         Ok(old_val)
     }
 
@@ -105,106 +97,6 @@ impl StringDataModel {
             .map_err(|e| format!("FoundationDB set_ttl error: {:?}", e))
     }
 
-    /// Acquire a per-key lock to prevent concurrent writers for large objects.
-    /// This function retries with backoff until timeout_ms is reached.
-    pub async fn acquire_lock(&self, key: &[u8], timeout_ms: u64) -> Result<(), String> {
-        use tokio::time::{sleep, Instant};
-
-        let start = Instant::now();
-        let mut backoff = 10u64; // ms
-        let lock_key = pack(&(StringPrefix::Lock, key));
-
-        // maximum age for a lock before considering it stale (ms)
-        let lock_ttl_ms: u128 = 10_000; // 10s
-
-        while start.elapsed().as_millis() as u64 <= timeout_ms {
-        // Try to create the lock in a short transaction: read then set if absent.
-            let lk = lock_key.clone();
-            let db = self.fdb.clone();
-            // capture now to allow comparing against an existing lock timestamp inside the transaction
-            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_millis() as u128,
-                Err(_) => 0u128,
-            };
-
-            let res = db
-                .database
-                .run(move |trx, _| {
-                    let lk = lk.clone();
-                    async move {
-                        let existing = trx.get(&lk, false).await?;
-                        if let Some(val) = existing {
-                            // someone holds the lock. try to detect if it's stale by parsing the token
-                            if let Ok(s) = std::str::from_utf8(&val) {
-                                if let Some(ts_str) = s.strip_prefix("locked:") {
-                                    if let Ok(owner_ts) = ts_str.parse::<u128>() {
-                                        // if the lock is older than lock_ttl_ms, take it
-                                        if now_ms.saturating_sub(owner_ts) as u128 > lock_ttl_ms {
-                                            // overwrite stale lock
-                                            let token = format!("locked:{}", now_ms);
-                                            trx.set(&lk, token.as_bytes());
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                            }
-                            // still held by a non-stale owner
-                            return Ok(false);
-                        }
-
-                        // set a simple token (timestamp) to mark the lock
-                        let token = format!("locked:{}", now_ms);
-                        trx.set(&lk, token.as_bytes());
-                        Ok(true)
-                    }
-                })
-                .await;
-
-            match res {
-                Ok(true) => return Ok(()),
-                Ok(false) => {
-                    // add a small deterministic jitter to reduce the thundering herd
-                    let jitter = (now_ms as u64) % backoff;
-                    let sleep_ms = backoff.saturating_add(jitter);
-                    sleep(std::time::Duration::from_millis(sleep_ms)).await;
-                    backoff = (backoff * 2).min(500);
-                    continue;
-                }
-                Err(e) => {
-                    // Treat transient FoundationDB errors (transaction aborts, timeouts) as retryable.
-                    // Log the error and sleep with backoff+jitter, then retry until overall timeout is reached.
-                    eprintln!("FoundationDB transient error while acquiring lock: {:?}. retrying...", e);
-                    let jitter = (now_ms as u64) % backoff;
-                    let sleep_ms = backoff.saturating_add(jitter);
-                    sleep(std::time::Duration::from_millis(sleep_ms)).await;
-                    backoff = (backoff * 2).min(500);
-                    continue;
-                }
-            }
-        }
-
-        Err("timeout acquiring key lock".to_string())
-    }
-
-    /// Release the per-key lock acquired with `acquire_lock`.
-    pub async fn release_lock(&self, key: &[u8]) -> Result<(), String> {
-        let lock_key = pack(&(StringPrefix::Lock, key));
-        // Perform a short transaction to clear the lock key to avoid ambiguity with other delete helpers
-        let lk = lock_key.clone();
-        let db = self.fdb.clone();
-        let res = db
-            .database
-            .run(move |trx, _| {
-                let lk = lk.clone();
-                async move {
-                    trx.clear(&lk);
-                    Ok(())
-                }
-            })
-            .await;
-
-        res.map_err(|e| format!("FoundationDB release_lock error: {:?}", e))
-    }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let packed_key = pack(&(StringPrefix::Data, key));
@@ -261,15 +153,11 @@ impl StringDataModel {
     }
 
     pub async fn delete(&self, key: &[u8]) -> Result<i64, String> {
-    // Acquire lock before deleting
-    // increase timeout under heavy contention
-    self.acquire_lock(key, 30000).await?;
         let packed_key = pack(&(StringPrefix::Data, key));
         let packed_ttl_key = pack(&(StringPrefix::Ttl, key));
         let r1 = self.fdb.delete(&packed_key).await;
         let r2 = self.fdb.delete(&packed_ttl_key).await;
-        // best-effort release
-        let _ = self.release_lock(key).await;
+
 
         if let Err(e) = r1 {
             return Err(format!("FoundationDB delete error: {:?}", e));
@@ -287,10 +175,6 @@ impl StringDataModel {
         let packed_key = pack(&(StringPrefix::Data, key));
         let pk = packed_key.clone();
         let db = self.fdb.clone();
-    // Acquire lock to serialize potentially large transactional writes
-    // increase timeout under heavy contention
-    self.acquire_lock(key, 30000).await?;
-        let release_key = key.to_vec();
 
         let res = db
             .database
@@ -348,8 +232,6 @@ impl StringDataModel {
                 }
             })
             .await;
-        // Release lock
-        let _ = self.release_lock(&release_key).await;
 
         match res {
             Ok((true, v)) => Ok(v),

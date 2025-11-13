@@ -6,28 +6,78 @@ use futures_util::stream::StreamExt;
 use std::result::Result;
 use std::sync::Arc;
 pub(crate) mod datamodel;
-use datamodel::DataModel;
+use datamodel::{DataModel, MAX_VALUE_SIZE};
+pub mod lock;
+pub use lock::LockManager;
+
+/// High-level prefixes used to partition top-level keys in FoundationDB.
+/// Use these values when packing top-level tuple keys to keep prefix constants in one place.
+#[repr(u64)]
+#[derive(Clone, Copy, Debug)]
+pub enum Prefix {
+    Data = 11,
+    Lock = 12,
+}
+
+impl Prefix {
+    pub fn as_u64(self) -> u64 {
+        self as u64
+    }
+}
 
 #[derive(Clone)]
 pub struct FoundationDB {
     pub database: Arc<foundationdb::Database>,
+    pub lock_manager: Arc<lock::LockManager>,
 }
 
 impl FoundationDB {
     pub fn new(db: Arc<foundationdb::Database>) -> Self {
-        Self { database: db }
+        let lm = LockManager::new(db.clone(), MAX_VALUE_SIZE, 10_000u128, 30_000u64).into_arc();
+        Self { database: db, lock_manager: lm }
     }
 
     pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<(), FdbBindingError> {
         let chunks = DataModel::split_into_chunks(value, None);
-        if (self.get(key).await?).is_some() {
+
+        // If the previous value was large, wait briefly for any in-flight modification to finish
+        // before proceeding. This avoids reading/writing over a partially-updated set.
+        let existing = DataModel::reconstruct_bloc(self, key).await?;
+        if self.lock_manager.should_lock_for_size(existing.len()) {
+            // best-effort wait; don't fail the set on timeout, but prefer to wait a short time
+            let _ = self.lock_manager.wait_for_unlock(key, Some(5000)).await;
+        }
+
+        // Acquire lock if new value is large enough
+        let mut token: Option<String> = None;
+        if self.lock_manager.should_lock_for_size(value.len()) {
+            match self.lock_manager.acquire(key, None).await {
+                Ok(t) => token = Some(t),
+                Err(e) => eprintln!("Lock acquire failed, proceeding without lock: {}", e),
+            }
+        }
+
+        if !existing.is_empty() {
             self.delete(key).await?;
         }
-        DataModel::store_chunks_in_fdb(self, key, chunks).await?;
+
+        let res = DataModel::store_chunks_in_fdb(self, key, chunks).await;
+
+        // best-effort release
+        if let Some(t) = token {
+            let _ = self.lock_manager.release(key, &t).await;
+        }
+
+        res?;
         Ok(())
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, FdbBindingError> {
+        // If there's a concurrent write underway, wait a short time for it to finish
+        // to avoid returning a partially updated set. If wait_for_unlock times out,
+        // proceed anyway to avoid blocking reads indefinitely.
+        let _ = self.lock_manager.wait_for_unlock(key, Some(2000)).await;
+
         let result = DataModel::reconstruct_bloc(self, key).await?;
         if result.is_empty() {
             Ok(None)
@@ -37,7 +87,21 @@ impl FoundationDB {
     }
 
     pub async fn delete(&self, key: &[u8]) -> Result<i64, FdbBindingError> {
-        DataModel::clean_chunks(self, key).await?;
+        // Acquire lock before deleting if likely large
+        let mut token: Option<String> = None;
+        // We can't easily know the value size here; assume delete may be large and try acquire with best-effort
+        match self.lock_manager.acquire(key, None).await {
+            Ok(t) => token = Some(t),
+            Err(e) => eprintln!("Lock acquire failed for delete, proceeding: {}", e),
+        }
+
+        let res = DataModel::clean_chunks(self, key).await;
+
+        if let Some(t) = token {
+            let _ = self.lock_manager.release(key, &t).await;
+        }
+
+        res?;
         Ok(1)
     }
 
