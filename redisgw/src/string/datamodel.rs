@@ -113,25 +113,46 @@ impl StringDataModel {
         let mut backoff = 10u64; // ms
         let lock_key = pack(&(StringPrefix::Lock, key));
 
+        // maximum age for a lock before considering it stale (ms)
+        let lock_ttl_ms: u128 = 10_000; // 10s
+
         while start.elapsed().as_millis() as u64 <= timeout_ms {
             // Try to create the lock in a short transaction: read then set if absent.
             let lk = lock_key.clone();
             let db = self.fdb.clone();
+            // capture now to allow comparing against an existing lock timestamp inside the transaction
+            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_millis() as u128,
+                Err(_) => 0u128,
+            };
+
             let res = db
                 .database
                 .run(move |trx, _| {
                     let lk = lk.clone();
                     async move {
                         let existing = trx.get(&lk, false).await?;
-                        if existing.is_some() {
-                            // someone holds the lock
+                        if let Some(val) = existing {
+                            // someone holds the lock. try to detect if it's stale by parsing the token
+                            if let Ok(s) = std::str::from_utf8(&val) {
+                                if let Some(ts_str) = s.strip_prefix("locked:") {
+                                    if let Ok(owner_ts) = ts_str.parse::<u128>() {
+                                        // if the lock is older than lock_ttl_ms, take it
+                                        if now_ms.saturating_sub(owner_ts) as u128 > lock_ttl_ms {
+                                            // overwrite stale lock
+                                            let token = format!("locked:{}", now_ms);
+                                            trx.set(&lk, token.as_bytes());
+                                            return Ok(true);
+                                        }
+                                    }
+                                }
+                            }
+                            // still held by a non-stale owner
                             return Ok(false);
                         }
+
                         // set a simple token (timestamp) to mark the lock
-                        let token = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                            Ok(d) => format!("locked:{}", d.as_millis()),
-                            Err(_) => "locked:0".to_string(),
-                        };
+                        let token = format!("locked:{}", now_ms);
                         trx.set(&lk, token.as_bytes());
                         Ok(true)
                     }
