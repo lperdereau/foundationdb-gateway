@@ -70,8 +70,9 @@ impl StringDataModel {
             }
         }
 
-        // Acquire per-key lock to avoid concurrent large writes
-        self.acquire_lock(key, 5000).await?;
+    // Acquire per-key lock to avoid concurrent large writes
+    // increase timeout under heavy contention
+    self.acquire_lock(key, 30000).await?;
         let set_res = self.fdb.set(&packed_key, value).await;
         if let Err(e) = set_res {
             let _ = self.release_lock(key).await; // best-effort
@@ -117,7 +118,7 @@ impl StringDataModel {
         let lock_ttl_ms: u128 = 10_000; // 10s
 
         while start.elapsed().as_millis() as u64 <= timeout_ms {
-            // Try to create the lock in a short transaction: read then set if absent.
+        // Try to create the lock in a short transaction: read then set if absent.
             let lk = lock_key.clone();
             let db = self.fdb.clone();
             // capture now to allow comparing against an existing lock timestamp inside the transaction
@@ -162,15 +163,20 @@ impl StringDataModel {
             match res {
                 Ok(true) => return Ok(()),
                 Ok(false) => {
-                    sleep(std::time::Duration::from_millis(backoff)).await;
+                    // add a small deterministic jitter to reduce the thundering herd
+                    let jitter = (now_ms as u64) % backoff;
+                    let sleep_ms = backoff.saturating_add(jitter);
+                    sleep(std::time::Duration::from_millis(sleep_ms)).await;
                     backoff = (backoff * 2).min(500);
                     continue;
                 }
                 Err(e) => {
                     // Treat transient FoundationDB errors (transaction aborts, timeouts) as retryable.
-                    // Log the error and sleep with backoff, then retry until overall timeout is reached.
+                    // Log the error and sleep with backoff+jitter, then retry until overall timeout is reached.
                     eprintln!("FoundationDB transient error while acquiring lock: {:?}. retrying...", e);
-                    sleep(std::time::Duration::from_millis(backoff)).await;
+                    let jitter = (now_ms as u64) % backoff;
+                    let sleep_ms = backoff.saturating_add(jitter);
+                    sleep(std::time::Duration::from_millis(sleep_ms)).await;
                     backoff = (backoff * 2).min(500);
                     continue;
                 }
@@ -255,8 +261,9 @@ impl StringDataModel {
     }
 
     pub async fn delete(&self, key: &[u8]) -> Result<i64, String> {
-        // Acquire lock before deleting
-        self.acquire_lock(key, 5000).await?;
+    // Acquire lock before deleting
+    // increase timeout under heavy contention
+    self.acquire_lock(key, 30000).await?;
         let packed_key = pack(&(StringPrefix::Data, key));
         let packed_ttl_key = pack(&(StringPrefix::Ttl, key));
         let r1 = self.fdb.delete(&packed_key).await;
@@ -280,8 +287,9 @@ impl StringDataModel {
         let packed_key = pack(&(StringPrefix::Data, key));
         let pk = packed_key.clone();
         let db = self.fdb.clone();
-        // Acquire lock to serialize potentially large transactional writes
-        self.acquire_lock(key, 5000).await?;
+    // Acquire lock to serialize potentially large transactional writes
+    // increase timeout under heavy contention
+    self.acquire_lock(key, 30000).await?;
         let release_key = key.to_vec();
 
         let res = db
